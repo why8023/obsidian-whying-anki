@@ -1,10 +1,11 @@
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient } from "./anki-client";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
-import { computeCardRevision, generateCardUid } from "./normalize";
+import { computeCardRevision, generateCardUid, normalizeCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
 import { serializeCardEnd } from "./syntax";
 import type {
+	CardIndexRecord,
 	LocalRefreshResult,
 	ParsedCard,
 	PluginIndex,
@@ -285,8 +286,7 @@ async function prepareScannedFile(
 ): Promise<PreparedScannedFile> {
 	const cards = await Promise.all(
 		scannedFile.cards.map(async (originalCard) => {
-			const existingRecord =
-				originalCard.uid ? indexSnapshot.cardsByUid[originalCard.uid] : undefined;
+			const existingRecord = findCardIndexRecord(indexSnapshot, originalCard.uid);
 			const resolvedNoteId = originalCard.noteId ?? existingRecord?.ankiNoteId ?? null;
 			const uid = originalCard.uid ?? generateCardUid();
 			const rev = await computeCardRevision({
@@ -320,8 +320,31 @@ async function prepareScannedFile(
 	return {
 		scannedFile,
 		cards,
-		deletedUids: [...oldUids].filter((uid) => !newUids.has(uid)),
+		deletedUids: [...oldUids].filter((uid) => !newUids.has(normalizeCardUid(uid) ?? uid)),
 	};
+}
+
+function findCardIndexRecord(
+	indexSnapshot: PluginIndex,
+	uid: string | null,
+): CardIndexRecord | undefined {
+	if (!uid) {
+		return undefined;
+	}
+
+	const candidates = [uid];
+	if (!uid.startsWith("c_")) {
+		candidates.push(`c_${uid}`);
+	}
+
+	for (const candidate of candidates) {
+		const record = indexSnapshot.cardsByUid[candidate];
+		if (record) {
+			return record;
+		}
+	}
+
+	return undefined;
 }
 
 async function syncPreparedCard(

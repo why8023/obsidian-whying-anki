@@ -19,9 +19,17 @@ export class AnkiConnectError extends Error {
 
 export class AnkiClient {
 	private readonly endpoint: string;
+	private readonly autoCreateMissingDecks: boolean;
+	private deckNamesCache: Set<string> | null = null;
 
-	constructor(settings: Pick<WhyingAnkiSettings, "ankiHost" | "ankiPort">) {
+	constructor(
+		settings: Pick<
+			WhyingAnkiSettings,
+			"ankiHost" | "ankiPort" | "autoCreateMissingDecks"
+		>,
+	) {
 		this.endpoint = `http://${settings.ankiHost}:${settings.ankiPort}`;
+		this.autoCreateMissingDecks = settings.autoCreateMissingDecks;
 	}
 
 	async ensureReadyForBasicSync(): Promise<void> {
@@ -55,6 +63,10 @@ export class AnkiClient {
 		back: string;
 		tags: string[];
 	}): Promise<string> {
+		if (this.autoCreateMissingDecks) {
+			await this.ensureDeckExists(input.deckName);
+		}
+
 		const noteId = await this.call<number>("addNote", {
 			note: {
 				deckName: input.deckName,
@@ -114,6 +126,32 @@ export class AnkiClient {
 
 	private async getModelFieldNames(modelName: string): Promise<string[]> {
 		return this.call<string[]>("modelFieldNames", { modelName });
+	}
+
+	private async getDeckNames(): Promise<string[]> {
+		return this.call<string[]>("deckNames");
+	}
+
+	private async createDeck(deckName: string): Promise<void> {
+		await this.call("createDeck", { deck: deckName });
+	}
+
+	private async ensureDeckExists(deckName: string): Promise<void> {
+		const normalizedDeckName = deckName.trim();
+		if (!normalizedDeckName) {
+			return;
+		}
+
+		if (!this.deckNamesCache) {
+			this.deckNamesCache = new Set(await this.getDeckNames());
+		}
+
+		if (this.deckNamesCache.has(normalizedDeckName)) {
+			return;
+		}
+
+		await this.createDeck(normalizedDeckName);
+		this.deckNamesCache.add(normalizedDeckName);
 	}
 
 	private async call<TResult>(

@@ -16,6 +16,14 @@ export function normalizeDeck(value: string | null | undefined): string {
 	return value?.trim() ?? "";
 }
 
+export function normalizeCardUid(value: string | null | undefined): string | null {
+	if (!value) {
+		return null;
+	}
+
+	return value.startsWith("c_") ? value.slice(2) : value;
+}
+
 export function normalizeTags(values: Iterable<string>): string[] {
 	const seen = new Set<string>();
 	const normalized: string[] = [];
@@ -51,10 +59,10 @@ export function resolveEffectiveTags(
 
 export function generateCardUid(): string {
 	if (typeof globalThis.crypto?.randomUUID === "function") {
-		return `c_${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
+		return globalThis.crypto.randomUUID().replace(/-/g, "");
 	}
 
-	return `c_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export async function computeCardRevision(input: {

@@ -62,7 +62,7 @@
 ATP 的全称是什么？
 <!-- card-back -->
 Adenosine Triphosphate
-<!-- card-end uid="c_01H..." id="1759203812345" rev="sha256:abcd..." -->
+<!-- card-end uid="01H..." id="1759203812345" rev="sha256:abcd..." -->
 ```
 
 这是本设计的标准形式。
@@ -483,7 +483,7 @@ Step 8  清理 dirtyFiles / pendingDelete
 5. 写回：
 
 ```md
-<!-- card-end uid="c_..." id="1759203812345" rev="sha256:..." -->
+<!-- card-end uid="..." id="1759203812345" rev="sha256:..." -->
 ```
 
 ### 14.2 更新后回写
@@ -838,7 +838,7 @@ ATP 的全称是什么？
 Adenosine Triphosphate
 
 <p><a href="obsidian://open?vault=MyVault&file=Biology/ATP.md">Open in Obsidian</a></p>
-<!-- card-end uid="c_01HXYZ..." id="1759203812345" rev="sha256:3a8e..." -->
+<!-- card-end uid="01HXYZ..." id="1759203812345" rev="sha256:3a8e..." -->
 
 继续普通正文。
 ```

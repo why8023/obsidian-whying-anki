@@ -13,6 +13,7 @@ Phase 1 to phase 4 are implemented:
 - Persist a local index for future sync and deletion phases.
 - Connect to Anki through AnkiConnect.
 - Validate the `Basic` model before syncing.
+- Auto-create missing decks before adding notes.
 - Create new notes with `addNote`.
 - Update existing notes with `updateNoteFields`.
 - Delete removed notes through the pending delete queue.
@@ -31,7 +32,7 @@ Planned next phases:
 What does ATP stand for?
 <!-- card-back -->
 Adenosine Triphosphate
-<!-- card-end uid="c_..." rev="sha256:..." -->
+<!-- card-end uid="..." rev="sha256:..." -->
 ```
 
 Supported file defaults:

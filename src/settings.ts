@@ -5,6 +5,7 @@ export interface WhyingAnkiSettings {
 	defaultTags: string[];
 	ankiHost: string;
 	ankiPort: number;
+	autoCreateMissingDecks: boolean;
 	appendObsidianUriToBack: boolean;
 	reconcileOnStartup: boolean;
 }
@@ -14,6 +15,7 @@ export const DEFAULT_SETTINGS: WhyingAnkiSettings = {
 	defaultTags: [],
 	ankiHost: "127.0.0.1",
 	ankiPort: 8765,
+	autoCreateMissingDecks: true,
 	appendObsidianUriToBack: true,
 	reconcileOnStartup: true,
 };
@@ -34,6 +36,9 @@ export function normalizeSettings(
 			typeof settings?.ankiPort === "number" && Number.isInteger(settings.ankiPort)
 				? settings.ankiPort
 				: DEFAULT_SETTINGS.ankiPort,
+		autoCreateMissingDecks:
+			settings?.autoCreateMissingDecks ??
+			DEFAULT_SETTINGS.autoCreateMissingDecks,
 		appendObsidianUriToBack:
 			settings?.appendObsidianUriToBack ??
 			DEFAULT_SETTINGS.appendObsidianUriToBack,
@@ -106,6 +111,18 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 							this.plugin.settings.ankiPort = port;
 							await this.plugin.savePluginData();
 						}
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Auto-create missing decks")
+			.setDesc("Create the target deck in Anki before adding notes when needed.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoCreateMissingDecks)
+					.onChange(async (value) => {
+						this.plugin.settings.autoCreateMissingDecks = value;
+						await this.plugin.savePluginData();
 					}),
 			);
 

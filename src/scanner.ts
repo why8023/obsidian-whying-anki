@@ -2,6 +2,7 @@ import type { App, TFile } from "obsidian";
 import {
 	detectPreferredNewline,
 	normalizeCardBody,
+	normalizeCardUid,
 	resolveEffectiveDeck,
 	resolveEffectiveTags,
 } from "./normalize";
@@ -45,7 +46,7 @@ export async function scanMarkdownFile(
 
 		return {
 			...card,
-			uid: card.endMeta.uid,
+			uid: normalizeCardUid(card.endMeta.uid),
 			noteId: card.endMeta.noteId,
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,
