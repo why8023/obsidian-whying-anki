@@ -61,6 +61,13 @@ anki-tags: [bio, exam]
 ---
 ```
 
+Deck priority is:
+
+- Explicit `deck="..."` on `card-start`
+- `anki-deck` in file frontmatter
+- `Default deck::vault::relative::file`
+- `Default deck`
+
 ## Commands
 
 - `Sync cards to Anki`

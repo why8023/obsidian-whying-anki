@@ -61,7 +61,9 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Default deck")
-			.setDesc("Used when neither frontmatter nor card metadata provides a deck.")
+			.setDesc(
+				"Acts as the root deck. If card and file decks are missing, try Default deck::folder::note first, then Default deck.",
+			)
 			.addText((text) =>
 				text
 					.setPlaceholder("Biology::cell")

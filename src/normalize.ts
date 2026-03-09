@@ -16,6 +16,21 @@ export function normalizeDeck(value: string | null | undefined): string {
 	return value?.trim() ?? "";
 }
 
+export function buildScopedDefaultDeck(
+	defaultDeck: string,
+	filePath: string | null | undefined,
+): string {
+	const normalizedDefaultDeck = normalizeDeck(defaultDeck);
+	if (!normalizedDefaultDeck) {
+		return "";
+	}
+
+	const pathSegments = normalizeVaultPathToDeckSegments(filePath);
+	return pathSegments.length > 0
+		? `${normalizedDefaultDeck}::${pathSegments.join("::")}`
+		: "";
+}
+
 export function normalizeCardUid(value: string | null | undefined): string | null {
 	if (!value) {
 		return null;
@@ -45,8 +60,14 @@ export function resolveEffectiveDeck(
 	cardDeck: string | null | undefined,
 	fileDeck: string | null | undefined,
 	defaultDeck: string,
+	filePath?: string,
 ): string {
-	return normalizeDeck(cardDeck) || normalizeDeck(fileDeck) || normalizeDeck(defaultDeck);
+	return (
+		normalizeDeck(cardDeck) ||
+		normalizeDeck(fileDeck) ||
+		buildScopedDefaultDeck(defaultDeck, filePath) ||
+		normalizeDeck(defaultDeck)
+	);
 }
 
 export function resolveEffectiveTags(
@@ -89,4 +110,27 @@ export async function computeCardRevision(input: {
 
 function toHex(bytes: Uint8Array): string {
 	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function normalizeVaultPathToDeckSegments(
+	filePath: string | null | undefined,
+): string[] {
+	if (!filePath) {
+		return [];
+	}
+
+	const rawSegments = filePath
+		.split(/[\\/]/)
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+	if (rawSegments.length === 0) {
+		return [];
+	}
+
+	const lastIndex = rawSegments.length - 1;
+	return rawSegments
+		.map((segment, index) =>
+			index === lastIndex ? segment.replace(/\.md$/i, "").trim() : segment,
+		)
+		.filter(Boolean);
 }

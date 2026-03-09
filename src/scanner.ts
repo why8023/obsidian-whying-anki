@@ -36,6 +36,7 @@ export async function scanMarkdownFile(
 			card.startMeta.deck,
 			fileDefaults.deck,
 			settings.defaultDeck,
+			file.path,
 		);
 		const effectiveTags = resolveEffectiveTags(
 			settings.defaultTags,
