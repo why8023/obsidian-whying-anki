@@ -1,7 +1,7 @@
 import { requestUrl } from "obsidian";
 import type { WhyingAnkiSettings } from "./settings";
 
-const ANKI_CONNECT_VERSION = 5;
+const ANKI_CONNECT_VERSION = 6;
 const BASIC_MODEL_NAME = "Basic";
 const BASIC_MODEL_FIELDS = ["Front", "Back"];
 

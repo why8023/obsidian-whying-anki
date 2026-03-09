@@ -48,7 +48,7 @@
 实现上不要硬编码“我一定面对的是某个固定版本的 AnkiConnect”。插件启动时先调用：
 
 ```json
-{"action":"version","version":5}
+{"action":"version","version":6}
 ```
 
 如果返回版本不满足最小要求，就给出错误提示并终止同步。这样比在代码里假设“用户一定是某个版本”更稳。([GitHub][4])
@@ -336,6 +336,7 @@ AnkiConnect 的 `modelNames`、`modelFieldNames` 可以用来校验当前环境�
 
 * `version`
 * `deckNames`
+* `createDeck`
 * `modelNames`
 * `addNote`
 * `updateNoteFields`
@@ -579,6 +580,7 @@ type SyncPlan = {
 * HTTP POST 到 `127.0.0.1:8765`
 * `version`
 * `deckNames`
+* `createDeck`
 * `modelNames`
 * `addNote`
 * `updateNoteFields`
