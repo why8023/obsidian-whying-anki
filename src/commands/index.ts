@@ -1,38 +1,25 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile } from "obsidian";
 import {
 	rebuildSyncIndex,
 	refreshLocalMetadataForFiles,
 	syncCardsToAnki,
 	validateMarkdownFile,
 } from "../sync-runner";
+import { registerEditorCommands } from "./editor-commands";
 import type {
 	LocalRefreshResult,
 	SyncToAnkiResult,
 	WhyingAnkiPluginApi,
 } from "../types";
 
-const CARD_TEMPLATE = [
-	"<!-- card-start -->",
-	"Front",
-	"<!-- card-back -->",
-	"Back",
-	"<!-- card-end -->",
-].join("\n");
-
 export function registerCommands(plugin: Plugin & WhyingAnkiPluginApi): void {
+	registerEditorCommands(plugin);
+
 	plugin.addCommand({
 		id: "sync-cards-to-anki",
 		name: "Sync cards to Anki",
 		callback: () => {
 			void runSyncCardsToAnki(plugin);
-		},
-	});
-
-	plugin.addCommand({
-		id: "insert-card-template",
-		name: "Insert card template",
-		editorCallback: (editor: Editor) => {
-			editor.replaceSelection(CARD_TEMPLATE);
 		},
 	});
 
