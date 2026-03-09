@@ -70,7 +70,6 @@ export interface PluginIndex {
 	cardsByUid: Record<string, CardIndexRecord>;
 	uidsByFile: Record<string, string[]>;
 	pendingDeleteNoteIds: string[];
-	dirtyFiles: string[];
 	lastFullReconcileAt: number | null;
 }
 
@@ -83,10 +82,7 @@ export interface IndexStoreApi {
 	getSnapshot(): PluginIndex;
 	getPendingDeleteNoteIds(): string[];
 	queuePendingDelete(noteIds: string[]): void;
-	markDirtyFile(filePath: string): void;
-	clearDirtyFile(filePath: string): void;
-	clearDirtyFiles(): void;
-	queueFileDelete(filePath: string): void;
+	dequeuePendingDelete(noteIds: string[]): void;
 	removeCardsByNoteIds(noteIds: string[]): void;
 	removeCardsByUids(uids: string[]): void;
 	renameFile(oldPath: string, newPath: string): void;

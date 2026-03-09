@@ -1,5 +1,5 @@
 import type { Plugin, TFile } from "obsidian";
-import { AnkiClient } from "./anki-client";
+import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
 import { computeCardRevision, generateCardUid, normalizeCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
@@ -30,6 +30,10 @@ interface PreparedScannedFile {
 	scannedFile: ScannedFile;
 	cards: PreparedCardState[];
 	deletedUids: string[];
+}
+
+interface PreparedSyncFile extends PreparedScannedFile {
+	fileRewritten: boolean;
 }
 
 export async function validateMarkdownFile(
@@ -107,7 +111,6 @@ export async function refreshLocalMetadataForFiles(
 				preserveSyncedRev: true,
 			},
 		);
-		plugin.indexStore.clearDirtyFile(scannedFile.file.path);
 	}
 
 	await plugin.savePluginData();
@@ -182,9 +185,23 @@ export async function syncCardsToAnki(
 		return result;
 	}
 
-	const preparedFiles = await Promise.all(
-		scannedFiles.map((scannedFile) => prepareScannedFile(scannedFile, indexSnapshot)),
+	const preparedFiles = await prepareSyncFiles(
+		plugin,
+		scannedFiles,
+		indexSnapshot,
+		result.runtimeErrors,
 	);
+	const activeNoteIds = collectActiveNoteIds(preparedFiles);
+	plugin.indexStore.dequeuePendingDelete(activeNoteIds);
+
+	let existingNotesById = new Map<string, AnkiNoteInfo>();
+	try {
+		existingNotesById = await client.getNotesInfo(activeNoteIds);
+	} catch (error) {
+		result.runtimeErrors.push(asErrorMessage(error));
+		await plugin.savePluginData();
+		return result;
+	}
 
 	try {
 		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
@@ -236,7 +253,16 @@ export async function syncCardsToAnki(
 
 		const syncedStates: PreparedCardState[] = [];
 		for (const state of preparedFile.cards) {
-			syncedStates.push(await syncPreparedCard(client, state, result));
+			syncedStates.push(
+				await syncPreparedCard(
+					client,
+					state,
+					state.finalCard.noteId
+						? existingNotesById.get(state.finalCard.noteId) ?? null
+						: null,
+					result,
+				),
+			);
 		}
 
 		const rewrites = buildCardRewrites(syncedStates);
@@ -247,7 +273,7 @@ export async function syncCardsToAnki(
 			result.runtimeErrors,
 		);
 
-		if (rewritten) {
+		if (preparedFile.fileRewritten || rewritten) {
 			result.filesRewritten += 1;
 		}
 
@@ -256,10 +282,6 @@ export async function syncCardsToAnki(
 			syncedStates.map((state) => state.finalCard),
 			{ preserveUnseen: !deletePhaseSucceeded },
 		);
-
-		if (rewritten || rewrites.length === 0) {
-			plugin.indexStore.clearDirtyFile(scannedFile.file.path);
-		}
 	}
 
 	await plugin.savePluginData();
@@ -330,6 +352,64 @@ async function prepareScannedFile(
 	};
 }
 
+async function prepareSyncFiles(
+	plugin: Plugin & WhyingAnkiPluginApi,
+	scannedFiles: ScannedFile[],
+	indexSnapshot: PluginIndex,
+	runtimeErrors: string[],
+): Promise<PreparedSyncFile[]> {
+	const preparedFiles: PreparedSyncFile[] = [];
+
+	for (const scannedFile of scannedFiles) {
+		const preparedFile = await prepareScannedFile(scannedFile, indexSnapshot);
+		const stabilizedFile = await ensureFileHasStableUids(
+			plugin,
+			preparedFile,
+			indexSnapshot,
+			runtimeErrors,
+		);
+		if (stabilizedFile) {
+			preparedFiles.push(stabilizedFile);
+		}
+	}
+
+	return preparedFiles;
+}
+
+async function ensureFileHasStableUids(
+	plugin: WhyingAnkiPluginApi,
+	preparedFile: PreparedScannedFile,
+	indexSnapshot: PluginIndex,
+	runtimeErrors: string[],
+): Promise<PreparedSyncFile | null> {
+	const uidRewrites = buildUidRewrites(preparedFile.cards);
+	if (uidRewrites.length === 0) {
+		return { ...preparedFile, fileRewritten: false };
+	}
+
+	const rewritten = await commitFileRewrites(
+		plugin,
+		preparedFile.scannedFile,
+		uidRewrites,
+		runtimeErrors,
+	);
+	if (!rewritten) {
+		return null;
+	}
+
+	const rescannedFile = await scanMarkdownFile(
+		plugin.app,
+		preparedFile.scannedFile.file,
+		plugin.settings,
+	);
+	const rescannedPreparedFile = await prepareScannedFile(rescannedFile, indexSnapshot);
+
+	return {
+		...rescannedPreparedFile,
+		fileRewritten: true,
+	};
+}
+
 function findCardIndexRecord(
 	indexSnapshot: PluginIndex,
 	uid: string | null,
@@ -356,7 +436,6 @@ function findCardIndexRecord(
 function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[] {
 	return preparedFiles.flatMap((preparedFile) =>
 		preparedFile.cards
-			.filter((state) => !state.finalCard.noteId)
 			.map((state) => state.finalCard.effectiveDeck)
 			.filter(Boolean),
 	);
@@ -365,6 +444,7 @@ function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[]
 async function syncPreparedCard(
 	client: AnkiClient,
 	state: PreparedCardState,
+	existingNote: AnkiNoteInfo | null,
 	result: SyncToAnkiResult,
 ): Promise<PreparedCardState> {
 	const card = state.finalCard;
@@ -380,7 +460,7 @@ async function syncPreparedCard(
 		};
 	}
 
-	if (!card.noteId) {
+	if (!card.noteId || existingNote === null) {
 		try {
 			const noteId = await client.addBasicNote({
 				deckName: card.effectiveDeck,
@@ -419,7 +499,9 @@ async function syncPreparedCard(
 		await client.updateBasicNote(card.noteId, {
 			front: card.frontNormalized,
 			back: card.backNormalized,
+			tags: card.effectiveTags,
 		});
+		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
 		return state;
 	} catch (error) {
@@ -432,6 +514,26 @@ async function syncPreparedCard(
 			},
 		};
 	}
+}
+
+function buildUidRewrites(cards: PreparedCardState[]): CardRewrite[] {
+	return cards
+		.map((card) => {
+			if (card.originalCard.uid) {
+				return null;
+			}
+
+			return {
+				startOffset: card.originalCard.endMarkerStartOffset,
+				endOffset: card.originalCard.endMarkerEndOffset,
+				replacement: serializeCardEnd({
+					uid: card.finalCard.uid,
+					noteId: card.originalCard.noteId,
+					rev: card.originalCard.rev,
+				}),
+			};
+		})
+		.filter((rewrite): rewrite is CardRewrite => rewrite !== null);
 }
 
 function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
@@ -452,6 +554,18 @@ function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
 				  };
 		})
 		.filter((rewrite): rewrite is CardRewrite => rewrite !== null);
+}
+
+function collectActiveNoteIds(preparedFiles: PreparedSyncFile[]): string[] {
+	return [
+		...new Set(
+			preparedFiles.flatMap((preparedFile) =>
+				preparedFile.cards
+					.map((state) => state.finalCard.noteId)
+					.filter((noteId): noteId is string => Boolean(noteId)),
+			),
+		),
+	];
 }
 
 async function commitFileRewrites(

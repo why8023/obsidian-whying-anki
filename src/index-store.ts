@@ -8,7 +8,6 @@ export function createEmptyPluginIndex(): PluginIndex {
 		cardsByUid: {},
 		uidsByFile: {},
 		pendingDeleteNoteIds: [],
-		dirtyFiles: [],
 		lastFullReconcileAt: null,
 	};
 }
@@ -36,34 +35,23 @@ export class IndexStore {
 		}
 	}
 
+	dequeuePendingDelete(noteIds: string[]): void {
+		if (noteIds.length === 0) {
+			return;
+		}
+
+		const noteIdSet = new Set(noteIds);
+		this.index.pendingDeleteNoteIds = this.index.pendingDeleteNoteIds.filter(
+			(noteId) => !noteIdSet.has(noteId),
+		);
+	}
+
 	replace(index: PluginIndex): void {
 		this.index = clonePluginIndex(index);
 	}
 
 	setLastFullReconcileAt(timestamp: number | null): void {
 		this.index.lastFullReconcileAt = timestamp;
-	}
-
-	markDirtyFile(filePath: string): void {
-		if (!this.index.dirtyFiles.includes(filePath)) {
-			this.index.dirtyFiles.push(filePath);
-		}
-	}
-
-	clearDirtyFile(filePath: string): void {
-		this.index.dirtyFiles = this.index.dirtyFiles.filter((path) => path !== filePath);
-	}
-
-	clearDirtyFiles(): void {
-		this.index.dirtyFiles = [];
-	}
-
-	queueFileDelete(filePath: string): void {
-		this.queuePendingDelete(
-			(this.index.uidsByFile[filePath] ?? [])
-				.map((uid) => this.index.cardsByUid[uid]?.ankiNoteId)
-				.filter((noteId): noteId is string => Boolean(noteId)),
-		);
 	}
 
 	renameFile(oldPath: string, newPath: string): void {
@@ -81,8 +69,6 @@ export class IndexStore {
 				record.filePath = newPath;
 			}
 		}
-
-		this.markDirtyFile(newPath);
 	}
 
 	removeCardsByNoteIds(noteIds: string[]): void {
@@ -184,9 +170,6 @@ function normalizePluginIndex(snapshot?: Partial<PluginIndex>): PluginIndex {
 		pendingDeleteNoteIds: Array.isArray(snapshot?.pendingDeleteNoteIds)
 			? [...new Set(snapshot.pendingDeleteNoteIds.filter(isString))]
 			: [],
-		dirtyFiles: Array.isArray(snapshot?.dirtyFiles)
-			? [...new Set(snapshot.dirtyFiles.filter(isString))]
-			: [],
 		lastFullReconcileAt:
 			typeof snapshot?.lastFullReconcileAt === "number"
 				? snapshot.lastFullReconcileAt
@@ -200,7 +183,6 @@ function clonePluginIndex(index: PluginIndex): PluginIndex {
 		cardsByUid: { ...index.cardsByUid },
 		uidsByFile: cloneFileMap(index.uidsByFile),
 		pendingDeleteNoteIds: [...index.pendingDeleteNoteIds],
-		dirtyFiles: [...index.dirtyFiles],
 		lastFullReconcileAt: index.lastFullReconcileAt,
 	};
 }

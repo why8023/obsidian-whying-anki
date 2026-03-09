@@ -5,6 +5,13 @@ const ANKI_CONNECT_VERSION = 6;
 const BASIC_MODEL_NAME = "Basic";
 const BASIC_MODEL_FIELDS = ["Front", "Back"];
 
+export interface AnkiNoteInfo {
+	noteId: string;
+	modelName: string;
+	tags: string[];
+	cards: number[];
+}
+
 interface AnkiConnectEnvelope<TResult> {
 	result: TResult;
 	error: string | null;
@@ -118,27 +125,76 @@ export class AnkiClient {
 
 	async updateBasicNote(
 		noteId: string,
-		fields: { front: string; back: string },
+		fields: { back: string; front: string; tags: string[] },
 	): Promise<void> {
-		const numericNoteId = Number.parseInt(noteId, 10);
-		if (!Number.isInteger(numericNoteId)) {
-			throw new AnkiConnectError(`Invalid Anki note id "${noteId}".`);
-		}
-
-		await this.call("updateNoteFields", {
+		await this.call("updateNote", {
 			note: {
-				id: numericNoteId,
+				id: parseNumericNoteId(noteId),
 				fields: {
 					Front: fields.front,
 					Back: fields.back,
 				},
+				tags: fields.tags,
 			},
 		});
 	}
 
+	async changeDeck(cardIds: number[], deckName: string): Promise<void> {
+		const normalizedCardIds = [...new Set(cardIds.filter((cardId) => Number.isInteger(cardId)))];
+		if (normalizedCardIds.length === 0) {
+			return;
+		}
+
+		await this.call("changeDeck", {
+			cards: normalizedCardIds,
+			deck: deckName,
+		});
+	}
+
+	async getNotesInfo(noteIds: string[]): Promise<Map<string, AnkiNoteInfo>> {
+		const requestedIds = [
+			...new Set(noteIds.map((noteId) => noteId.trim()).filter(Boolean)),
+		]
+			.map((noteId) => {
+				const numericNoteId = Number.parseInt(noteId, 10);
+				return Number.isInteger(numericNoteId) ? { noteId, numericNoteId } : null;
+			})
+			.filter(
+				(
+					entry,
+				): entry is {
+					noteId: string;
+					numericNoteId: number;
+				} => entry !== null,
+			);
+
+		if (requestedIds.length === 0) {
+			return new Map();
+		}
+
+		const results = await this.call<unknown[]>("notesInfo", {
+			notes: requestedIds.map((entry) => entry.numericNoteId),
+		});
+		const infoById = new Map<string, AnkiNoteInfo>();
+
+		results.forEach((result, index) => {
+			const entry = requestedIds[index];
+			if (!entry) {
+				return;
+			}
+
+			const noteInfo = parseAnkiNoteInfo(result);
+			if (noteInfo) {
+				infoById.set(entry.noteId, noteInfo);
+			}
+		});
+
+		return infoById;
+	}
+
 	async deleteNotes(noteIds: string[]): Promise<void> {
 		const numericNoteIds = noteIds
-			.map((noteId) => Number.parseInt(noteId, 10))
+			.map((noteId) => parseNumericNoteId(noteId))
 			.filter((noteId) => Number.isInteger(noteId));
 
 		if (numericNoteIds.length !== noteIds.length) {
@@ -195,4 +251,42 @@ export class AnkiClient {
 
 function isAnkiConnectEnvelope(value: unknown): value is AnkiConnectEnvelope<number> {
 	return value !== null && typeof value === "object" && "error" in value;
+}
+
+function parseNumericNoteId(noteId: string): number {
+	const numericNoteId = Number.parseInt(noteId, 10);
+	if (!Number.isInteger(numericNoteId)) {
+		throw new AnkiConnectError(`Invalid Anki note id "${noteId}".`);
+	}
+
+	return numericNoteId;
+}
+
+function parseAnkiNoteInfo(value: unknown): AnkiNoteInfo | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+
+	const noteId = "noteId" in value && typeof value.noteId === "number" ? value.noteId : null;
+	const modelName =
+		"modelName" in value && typeof value.modelName === "string" ? value.modelName : null;
+	const tags =
+		"tags" in value && Array.isArray(value.tags)
+			? value.tags.filter((tag): tag is string => typeof tag === "string")
+			: null;
+	const cards =
+		"cards" in value && Array.isArray(value.cards)
+			? value.cards.filter((cardId): cardId is number => Number.isInteger(cardId))
+			: null;
+
+	if (noteId === null || modelName === null || tags === null || cards === null) {
+		return null;
+	}
+
+	return {
+		noteId: String(noteId),
+		modelName,
+		tags,
+		cards,
+	};
 }
