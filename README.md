@@ -20,6 +20,7 @@ Phase 1 to phase 4 are implemented:
 - Handle file-path reconciliation at startup.
 - Preserve note mappings across file renames.
 - Append an Obsidian source link to the synced Back field.
+- Convert remote Markdown embeds like `![](<https://.../image.png>)` into Anki-ready HTML media tags.
 
 Planned next phases:
 
@@ -33,6 +34,22 @@ What does ATP stand for?
 <!-- card-back -->
 Adenosine Triphosphate
 <!-- card-end uid="..." rev="sha256:..." -->
+```
+
+Remote media embeds are supported inside the Front and Back content. The sync step converts Obsidian-style external embeds into HTML that Anki can render based on the URL extension:
+
+- Images: `png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `avif`, `bmp`, `apng`
+- Audio: `mp3`, `wav`, `ogg`, `oga`, `opus`, `m4a`, `flac`, `aac`
+- Video: `mp4`, `webm`, `mov`, `m4v`, `ogv`
+
+Example:
+
+```md
+<!-- card-start -->
+Name the structure shown below.
+<!-- card-back -->
+![](https://img.whynia.wang/20260309_1c371986b8ff8d2bc975039b78a5d213.png)
+<!-- card-end -->
 ```
 
 Supported file defaults:

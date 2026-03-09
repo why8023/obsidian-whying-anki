@@ -1,4 +1,5 @@
 import type { App, TFile } from "obsidian";
+import { renderMarkdownMediaForAnki } from "./markdown-media";
 import {
 	detectPreferredNewline,
 	normalizeCardBody,
@@ -42,7 +43,8 @@ export async function scanMarkdownFile(
 			card.startMeta.tags,
 		);
 
-		const backNormalizedBase = normalizeCardBody(card.backRaw);
+		const frontNormalized = renderMarkdownMediaForAnki(normalizeCardBody(card.frontRaw));
+		const backNormalizedBase = renderMarkdownMediaForAnki(normalizeCardBody(card.backRaw));
 
 		return {
 			...card,
@@ -50,7 +52,7 @@ export async function scanMarkdownFile(
 			noteId: card.endMeta.noteId,
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,
-			frontNormalized: normalizeCardBody(card.frontRaw),
+			frontNormalized,
 			backNormalized: settings.appendObsidianUriToBack
 				? appendObsidianLink(backNormalizedBase, obUri)
 				: backNormalizedBase,
