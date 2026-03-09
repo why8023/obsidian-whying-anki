@@ -77,9 +77,10 @@ export class IndexStore {
 	setFileCards(
 		filePath: string,
 		cards: ParsedCard[],
-		options: { preserveUnseen?: boolean } = {},
+		options: { preserveUnseen?: boolean; preserveSyncedRev?: boolean } = {},
 	): void {
 		const preserveUnseen = options.preserveUnseen ?? false;
+		const preserveSyncedRev = options.preserveSyncedRev ?? false;
 		const existingUids = new Set(this.index.uidsByFile[filePath] ?? []);
 		const nextUids: string[] = [];
 		const now = Date.now();
@@ -90,11 +91,14 @@ export class IndexStore {
 			}
 
 			nextUids.push(card.uid);
+			const existingRecord = this.index.cardsByUid[card.uid];
 			this.index.cardsByUid[card.uid] = {
 				uid: card.uid,
 				filePath,
 				ankiNoteId: card.noteId,
-				lastSyncedRev: card.rev,
+				lastSyncedRev: preserveSyncedRev
+					? existingRecord?.lastSyncedRev ?? (card.noteId ? card.rev : null)
+					: card.rev,
 				lastSeenAt: now,
 			};
 		}

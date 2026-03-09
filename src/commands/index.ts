@@ -2,9 +2,14 @@ import { Editor, MarkdownView, Notice, Plugin, TFile } from "obsidian";
 import {
 	rebuildSyncIndex,
 	refreshLocalMetadataForFiles,
+	syncCardsToAnki,
 	validateMarkdownFile,
 } from "../sync-runner";
-import type { LocalRefreshResult, WhyingAnkiPluginApi } from "../types";
+import type {
+	LocalRefreshResult,
+	SyncToAnkiResult,
+	WhyingAnkiPluginApi,
+} from "../types";
 
 const CARD_TEMPLATE = [
 	"<!-- card-start -->",
@@ -15,6 +20,14 @@ const CARD_TEMPLATE = [
 ].join("\n");
 
 export function registerCommands(plugin: Plugin & WhyingAnkiPluginApi): void {
+	plugin.addCommand({
+		id: "sync-cards-to-anki",
+		name: "Sync cards to Anki",
+		callback: () => {
+			void runSyncCardsToAnki(plugin);
+		},
+	});
+
 	plugin.addCommand({
 		id: "insert-card-template",
 		name: "Insert card template",
@@ -96,6 +109,13 @@ async function runRebuildSyncIndex(
 	reportResult("Rebuilt sync index", result);
 }
 
+async function runSyncCardsToAnki(
+	plugin: Plugin & WhyingAnkiPluginApi,
+): Promise<void> {
+	const result = await syncCardsToAnki(plugin);
+	reportSyncResult(result);
+}
+
 function reportResult(prefix: string, result: LocalRefreshResult): void {
 	logParseErrors(result.parseErrors);
 	logRuntimeErrors(result.runtimeErrors);
@@ -107,6 +127,19 @@ function reportResult(prefix: string, result: LocalRefreshResult): void {
 			: `${prefix}: ${result.cardsProcessed} card(s), ${issues} issue(s), ${result.filesRewritten} file rewrite(s).`;
 
 	new Notice(message, 6000);
+}
+
+function reportSyncResult(result: SyncToAnkiResult): void {
+	logParseErrors(result.parseErrors);
+	logRuntimeErrors(result.runtimeErrors);
+
+	const issues = result.parseErrors.length + result.runtimeErrors.length;
+	const message =
+		issues === 0
+			? `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsUnchanged} unchanged.`
+			: `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${issues} issue(s).`;
+
+	new Notice(message, 7000);
 }
 
 function logParseErrors(errors: LocalRefreshResult["parseErrors"]): void {

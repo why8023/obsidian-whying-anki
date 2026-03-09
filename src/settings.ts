@@ -82,7 +82,7 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Anki host")
-			.setDesc("Reserved for phase 2 Anki integration.")
+			.setDesc("Host used for local Anki sync requests.")
 			.addText((text) =>
 				text
 					.setPlaceholder("127.0.0.1")
@@ -95,7 +95,7 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Anki port")
-			.setDesc("Reserved for phase 2 Anki integration.")
+			.setDesc("Port used for local Anki sync requests.")
 			.addText((text) =>
 				text
 					.setPlaceholder(String(DEFAULT_SETTINGS.ankiPort))

@@ -90,7 +90,7 @@ export interface IndexStoreApi {
 	setFileCards(
 		filePath: string,
 		cards: ParsedCard[],
-		options?: { preserveUnseen?: boolean },
+		options?: { preserveUnseen?: boolean; preserveSyncedRev?: boolean },
 	): void;
 	replace(index: PluginIndex): void;
 }
@@ -108,4 +108,10 @@ export interface LocalRefreshResult {
 	cardsProcessed: number;
 	parseErrors: ParseError[];
 	runtimeErrors: string[];
+}
+
+export interface SyncToAnkiResult extends LocalRefreshResult {
+	cardsCreated: number;
+	cardsUpdated: number;
+	cardsUnchanged: number;
 }

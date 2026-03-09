@@ -4,17 +4,20 @@ Obsidian desktop plugin for staged one-way sync from Obsidian card blocks into A
 
 ## Current status
 
-Phase 1 is implemented:
+Phase 1 and phase 2 are implemented:
 
 - Parse `card-start` / `card-back` / `card-end` blocks.
 - Validate card syntax per file.
 - Generate stable local `uid` values and `rev` hashes.
 - Rewrite `card-end` metadata atomically with `Vault.process()`.
 - Persist a local index for future sync and deletion phases.
+- Connect to Anki through AnkiConnect.
+- Validate the `Basic` model before syncing.
+- Create new notes with `addNote`.
+- Update existing notes with `updateNoteFields`.
 
 Planned next phases:
 
-- Phase 2: minimum AnkiConnect integration for create and update.
 - Phase 3: delete, rename, and startup reconciliation flows.
 - Phase 4: user experience improvements such as source links and richer commands.
 
@@ -39,6 +42,7 @@ anki-tags: [bio, exam]
 
 ## Commands
 
+- `Sync cards to Anki`
 - `Insert card template`
 - `Validate card syntax in current file`
 - `Refresh card metadata in current file`
