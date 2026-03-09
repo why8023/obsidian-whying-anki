@@ -1,5 +1,5 @@
 import type { App, TFile } from "obsidian";
-import type { WhyingAnkiSettings } from "./settings";
+import type { ObakSettings } from "./settings";
 
 export interface CardStartMeta {
 	deck?: string;
@@ -77,7 +77,7 @@ export interface PluginIndex {
 }
 
 export interface StoredPluginData {
-	settings?: Partial<WhyingAnkiSettings>;
+	settings?: Partial<ObakSettings>;
 	index?: Partial<PluginIndex>;
 }
 
@@ -104,9 +104,9 @@ export interface IndexStoreApi {
 	replace(index: PluginIndex): void;
 }
 
-export interface WhyingAnkiPluginApi {
+export interface ObakPluginApi {
 	app: App;
-	settings: WhyingAnkiSettings;
+	settings: ObakSettings;
 	indexStore: IndexStoreApi;
 	clearFileDirty(filePath: string): void;
 	clearFilesDirty(filePaths: Iterable<string>): void;

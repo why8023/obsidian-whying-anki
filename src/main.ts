@@ -4,15 +4,15 @@ import { IndexStore } from "./index-store";
 import { registerObsidianEventHandlers } from "./obsidian-events";
 import {
 	DEFAULT_SETTINGS,
-	WhyingAnkiSettingTab,
+	ObakSettingTab,
 	normalizeSettings,
-	type WhyingAnkiSettings,
+	type ObakSettings,
 } from "./settings";
 import { reconcileMissingFiles } from "./sync-runner";
 import type { StoredPluginData } from "./types";
 
-export default class WhyingAnkiPlugin extends Plugin {
-	settings: WhyingAnkiSettings = DEFAULT_SETTINGS;
+export default class ObakPlugin extends Plugin {
+	settings: ObakSettings = DEFAULT_SETTINGS;
 	indexStore = new IndexStore();
 	private dirtyFilePaths = new Set<string>();
 	private internalWriteStateByPath = new Map<
@@ -25,7 +25,7 @@ export default class WhyingAnkiPlugin extends Plugin {
 		this.settings = normalizeSettings(data?.settings);
 		this.indexStore = new IndexStore(data?.index);
 
-		this.addSettingTab(new WhyingAnkiSettingTab(this.app, this));
+		this.addSettingTab(new ObakSettingTab(this.app, this));
 		registerCommands(this);
 		registerObsidianEventHandlers(this);
 

@@ -1,8 +1,8 @@
 import { Plugin, TFile } from "obsidian";
-import type { WhyingAnkiPluginApi } from "./types";
+import type { ObakPluginApi } from "./types";
 
 export function registerObsidianEventHandlers(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): void {
 	plugin.app.workspace.onLayoutReady(() => {
 		plugin.registerEvent(

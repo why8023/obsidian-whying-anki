@@ -1,5 +1,5 @@
 {
-	"name": "obsidian-whying-anki",
+	"name": "obsidian-obak",
 	"version": "1.0.0",
 	"description": "Obsidian desktop plugin for staged one-way card sync into Anki.",
 	"main": "main.js",

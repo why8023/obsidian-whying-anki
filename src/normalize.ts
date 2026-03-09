@@ -1,4 +1,4 @@
-import { WHYING_ANKI_MODEL_NAME } from "./anki-model";
+import { OBAK_MODEL_NAME } from "./anki-model";
 
 export function detectPreferredNewline(text: string): "\n" | "\r\n" {
 	return text.includes("\r\n") ? "\r\n" : "\n";
@@ -95,7 +95,7 @@ export async function computeCardRevision(input: {
 	obsidianPath: string;
 }): Promise<string> {
 	const payload = JSON.stringify({
-		model: WHYING_ANKI_MODEL_NAME,
+		model: OBAK_MODEL_NAME,
 		deck: input.effectiveDeck,
 		tags: normalizeTags(input.effectiveTags),
 		front: input.frontNormalized,

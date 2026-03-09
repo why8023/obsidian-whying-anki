@@ -1,14 +1,14 @@
 import { requestUrl } from "obsidian";
 import {
-	WHYING_ANKI_CARD_TEMPLATES,
-	WHYING_ANKI_MODEL_CSS,
-	WHYING_ANKI_MODEL_FIELDS,
-	WHYING_ANKI_MODEL_NAME,
-	buildWhyingAnkiFields,
-	type WhyingAnkiModelFieldName,
-	type WhyingAnkiNoteInput,
+	OBAK_CARD_TEMPLATES,
+	OBAK_MODEL_CSS,
+	OBAK_MODEL_FIELDS,
+	OBAK_MODEL_NAME,
+	buildObakFields,
+	type ObakModelFieldName,
+	type ObakNoteInput,
 } from "./anki-model";
-import type { WhyingAnkiSettings } from "./settings";
+import type { ObakSettings } from "./settings";
 
 const ANKI_CONNECT_VERSION = 6;
 
@@ -44,7 +44,7 @@ export class AnkiClient {
 
 	constructor(
 		settings: Pick<
-			WhyingAnkiSettings,
+			ObakSettings,
 			"ankiHost" | "ankiPort" | "autoCreateMissingDecks"
 		>,
 	) {
@@ -60,7 +60,7 @@ export class AnkiClient {
 			);
 		}
 
-		await this.ensureWhyingModel();
+		await this.ensureObakModel();
 	}
 
 	async ensureDecksExist(deckNames: Iterable<string>): Promise<void> {
@@ -97,29 +97,29 @@ export class AnkiClient {
 		}
 	}
 
-	async addWhyingNote(input: WhyingAnkiNoteInput): Promise<string> {
+	async addObakNote(input: ObakNoteInput): Promise<string> {
 		const noteId = await this.call<number>("addNote", {
-			note: buildWhyingNotePayload(input),
+			note: buildObakNotePayload(input),
 		});
 
 		return String(noteId);
 	}
 
-	async canAddWhyingNotes(inputs: WhyingAnkiNoteInput[]): Promise<boolean[]> {
+	async canAddObakNotes(inputs: ObakNoteInput[]): Promise<boolean[]> {
 		if (inputs.length === 0) {
 			return [];
 		}
 
 		return this.call<boolean[]>("canAddNotes", {
-			notes: inputs.map((input) => buildWhyingNotePayload(input)),
+			notes: inputs.map((input) => buildObakNotePayload(input)),
 		});
 	}
 
-	async updateWhyingNote(noteId: string, input: WhyingAnkiNoteInput): Promise<void> {
+	async updateObakNote(noteId: string, input: ObakNoteInput): Promise<void> {
 		await this.call("updateNote", {
 			note: {
 				id: parseNumericNoteId(noteId),
-				fields: buildWhyingAnkiFields(input.fields),
+				fields: buildObakFields(input.fields),
 				tags: input.tags,
 			},
 		});
@@ -231,33 +231,33 @@ export class AnkiClient {
 		});
 	}
 
-	private async ensureWhyingModel(): Promise<void> {
+	private async ensureObakModel(): Promise<void> {
 		const modelNames = await this.getModelNames();
-		if (!modelNames.includes(WHYING_ANKI_MODEL_NAME)) {
-			await this.createWhyingModel();
+		if (!modelNames.includes(OBAK_MODEL_NAME)) {
+			await this.createObakModel();
 			return;
 		}
 
-		const fieldNames = await this.getModelFieldNames(WHYING_ANKI_MODEL_NAME);
+		const fieldNames = await this.getModelFieldNames(OBAK_MODEL_NAME);
 		const sameFieldOrder =
-			fieldNames.length === WHYING_ANKI_MODEL_FIELDS.length &&
+			fieldNames.length === OBAK_MODEL_FIELDS.length &&
 			fieldNames.every(
-				(fieldName, index) => fieldName === WHYING_ANKI_MODEL_FIELDS[index],
+				(fieldName, index) => fieldName === OBAK_MODEL_FIELDS[index],
 			);
 
 		if (!sameFieldOrder) {
 			throw new AnkiConnectError(
-				`Anki model "${WHYING_ANKI_MODEL_NAME}" exists but does not match the expected field schema. Delete the model and sync again.`,
+				`Anki model "${OBAK_MODEL_NAME}" exists but does not match the expected field schema. Delete the model and sync again.`,
 			);
 		}
 	}
 
-	private async createWhyingModel(): Promise<void> {
+	private async createObakModel(): Promise<void> {
 		await this.call("createModel", {
-			modelName: WHYING_ANKI_MODEL_NAME,
-			inOrderFields: [...WHYING_ANKI_MODEL_FIELDS],
-			cardTemplates: WHYING_ANKI_CARD_TEMPLATES,
-			css: WHYING_ANKI_MODEL_CSS,
+			modelName: OBAK_MODEL_NAME,
+			inOrderFields: [...OBAK_MODEL_FIELDS],
+			cardTemplates: OBAK_CARD_TEMPLATES,
+			css: OBAK_MODEL_CSS,
 			isCloze: false,
 		});
 	}
@@ -305,16 +305,16 @@ export class AnkiClient {
 	}
 }
 
-function buildWhyingNotePayload(input: WhyingAnkiNoteInput): {
+function buildObakNotePayload(input: ObakNoteInput): {
 	deckName: string;
-	fields: Record<WhyingAnkiModelFieldName, string>;
+	fields: Record<ObakModelFieldName, string>;
 	modelName: string;
 	tags: string[];
 } {
 	return {
 		deckName: input.deckName,
-		modelName: WHYING_ANKI_MODEL_NAME,
-		fields: buildWhyingAnkiFields(input.fields),
+		modelName: OBAK_MODEL_NAME,
+		fields: buildObakFields(input.fields),
 		tags: input.tags,
 	};
 }
@@ -343,7 +343,7 @@ function isAnkiConnectEnvelope<TResult>(
 }
 
 function buildObsidianUidQuery(uid: string): string {
-	const escapedModelName = escapeAnkiSearchTerm(WHYING_ANKI_MODEL_NAME);
+	const escapedModelName = escapeAnkiSearchTerm(OBAK_MODEL_NAME);
 	const escapedUid = escapeAnkiSearchTerm(uid);
 	return `note:"${escapedModelName}" ObsidianUid:"${escapedUid}"`;
 }

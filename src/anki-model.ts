@@ -1,6 +1,6 @@
-export const WHYING_ANKI_MODEL_NAME = "Whying Obsidian Basic";
+export const OBAK_MODEL_NAME = "OBAK Basic";
 
-export const WHYING_ANKI_MODEL_FIELDS = [
+export const OBAK_MODEL_FIELDS = [
 	"ObsidianUid",
 	"AnkiDeck",
 	"AnkiTags",
@@ -12,10 +12,10 @@ export const WHYING_ANKI_MODEL_FIELDS = [
 	"ObsidianRev",
 ] as const;
 
-export type WhyingAnkiModelFieldName =
-	(typeof WHYING_ANKI_MODEL_FIELDS)[number];
+export type ObakModelFieldName =
+	(typeof OBAK_MODEL_FIELDS)[number];
 
-export interface WhyingAnkiFieldInput {
+export interface ObakFieldInput {
 	ankiDeck: string;
 	ankiNoteId: string | null;
 	ankiTags: string[];
@@ -27,19 +27,19 @@ export interface WhyingAnkiFieldInput {
 	obsidianUri: string;
 }
 
-export interface WhyingAnkiNoteInput {
+export interface ObakNoteInput {
 	deckName: string;
-	fields: WhyingAnkiFieldInput;
+	fields: ObakFieldInput;
 	tags: string[];
 }
 
-export interface WhyingAnkiCardTemplate {
+export interface ObakCardTemplate {
 	Back: string;
 	Front: string;
 	Name: string;
 }
 
-export const WHYING_ANKI_CARD_TEMPLATES: WhyingAnkiCardTemplate[] = [
+export const OBAK_CARD_TEMPLATES: ObakCardTemplate[] = [
 	{
 		Name: "Card 1",
 		Front: "{{Front}}",
@@ -57,7 +57,7 @@ export const WHYING_ANKI_CARD_TEMPLATES: WhyingAnkiCardTemplate[] = [
 	},
 ];
 
-export const WHYING_ANKI_MODEL_CSS = [
+export const OBAK_MODEL_CSS = [
 	".card {",
 	"\tfont-family: arial;",
 	"\tfont-size: 20px;",
@@ -73,9 +73,9 @@ export const WHYING_ANKI_MODEL_CSS = [
 	"}",
 ].join("\n");
 
-export function buildWhyingAnkiFields(
-	input: WhyingAnkiFieldInput,
-): Record<WhyingAnkiModelFieldName, string> {
+export function buildObakFields(
+	input: ObakFieldInput,
+): Record<ObakModelFieldName, string> {
 	return {
 		ObsidianUid: input.obsidianUid.trim(),
 		AnkiDeck: input.ankiDeck.trim(),

@@ -1,6 +1,6 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 
-export interface WhyingAnkiSettings {
+export interface ObakSettings {
 	defaultDeck: string;
 	defaultTags: string[];
 	ankiHost: string;
@@ -9,7 +9,7 @@ export interface WhyingAnkiSettings {
 	reconcileOnStartup: boolean;
 }
 
-export const DEFAULT_SETTINGS: WhyingAnkiSettings = {
+export const DEFAULT_SETTINGS: ObakSettings = {
 	defaultDeck: "",
 	defaultTags: [],
 	ankiHost: "127.0.0.1",
@@ -19,13 +19,13 @@ export const DEFAULT_SETTINGS: WhyingAnkiSettings = {
 };
 
 interface SettingsHost {
-	settings: WhyingAnkiSettings;
+	settings: ObakSettings;
 	savePluginData(): Promise<void>;
 }
 
 export function normalizeSettings(
-	settings?: Partial<WhyingAnkiSettings>,
-): WhyingAnkiSettings {
+	settings?: Partial<ObakSettings>,
+): ObakSettings {
 	return {
 		defaultDeck: settings?.defaultDeck?.trim() ?? DEFAULT_SETTINGS.defaultDeck,
 		defaultTags: normalizeStoredTags(settings?.defaultTags),
@@ -42,7 +42,7 @@ export function normalizeSettings(
 	};
 }
 
-export class WhyingAnkiSettingTab extends PluginSettingTab {
+export class ObakSettingTab extends PluginSettingTab {
 	plugin: SettingsHost;
 
 	constructor(app: App, plugin: Plugin & SettingsHost) {

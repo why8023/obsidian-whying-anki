@@ -10,10 +10,10 @@ import { registerEditorCommands } from "./editor-commands";
 import type {
 	LocalRefreshResult,
 	SyncToAnkiResult,
-	WhyingAnkiPluginApi,
+	ObakPluginApi,
 } from "../types";
 
-export function registerCommands(plugin: Plugin & WhyingAnkiPluginApi): void {
+export function registerCommands(plugin: Plugin & ObakPluginApi): void {
 	registerEditorCommands(plugin);
 
 	plugin.addCommand({
@@ -76,7 +76,7 @@ export function registerCommands(plugin: Plugin & WhyingAnkiPluginApi): void {
 }
 
 async function runValidateCurrentFile(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	file: TFile,
 ): Promise<void> {
 	const scannedFile = await validateMarkdownFile(plugin, file);
@@ -91,7 +91,7 @@ async function runValidateCurrentFile(
 }
 
 async function runRefreshCurrentFile(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 	file: TFile,
 ): Promise<void> {
 	const result = await refreshLocalMetadataForFiles(plugin, [file]);
@@ -99,21 +99,21 @@ async function runRefreshCurrentFile(
 }
 
 async function runRebuildSyncIndex(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	const result = await rebuildSyncIndex(plugin);
 	reportResult("Rebuilt sync index", result);
 }
 
 async function runSyncCardsToAnki(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	const result = await syncCardsToAnki(plugin);
 	reportSyncResult(result, "Synced");
 }
 
 async function runSyncChangedCardsToAnki(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	const result = await syncChangedCardsToAnki(plugin);
 	reportSyncResult(result, "Incremental sync");
@@ -151,18 +151,18 @@ function reportSyncResult(
 function logParseErrors(errors: LocalRefreshResult["parseErrors"]): void {
 	for (const error of errors) {
 		console.error(
-			`[obsidian-whying-anki] ${error.filePath}:${error.line} ${error.message}`,
+			`[obsidian-obak] ${error.filePath}:${error.line} ${error.message}`,
 		);
 	}
 }
 
 function logRuntimeErrors(errors: string[]): void {
 	for (const error of errors) {
-		console.error(`[obsidian-whying-anki] ${error}`);
+		console.error(`[obsidian-obak] ${error}`);
 	}
 }
 
-function getActiveMarkdownFile(plugin: WhyingAnkiPluginApi): TFile | null {
+function getActiveMarkdownFile(plugin: ObakPluginApi): TFile | null {
 	const view = plugin.app.workspace.getActiveViewOfType(MarkdownView);
 	return view?.file ?? null;
 }

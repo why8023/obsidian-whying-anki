@@ -1,4 +1,4 @@
-# Whying Anki Sync
+# obak
 
 Obsidian desktop plugin for staged one-way sync from Obsidian card blocks into Anki.
 
@@ -12,7 +12,7 @@ Phase 1 to phase 4 are implemented:
 - Rewrite `card-end` metadata atomically with `Vault.process()`.
 - Persist a local index for future sync and deletion phases.
 - Connect to Anki through AnkiConnect.
-- Auto-create and validate the `Whying Obsidian Basic` model before syncing.
+- Auto-create and validate the `OBAK Basic` model before syncing.
 - Auto-create missing decks before adding notes.
 - Create new notes with `addNote`.
 - Update existing notes with the custom field set and `changeDeck`.

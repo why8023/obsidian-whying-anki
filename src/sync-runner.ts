@@ -1,13 +1,13 @@
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
 import {
-	WHYING_ANKI_MODEL_NAME,
-	type WhyingAnkiNoteInput,
+	OBAK_MODEL_NAME,
+	type ObakNoteInput,
 } from "./anki-model";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
 import { computeCardRevision, generateCardUid, normalizeCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
-import type { WhyingAnkiSettings } from "./settings";
+import type { ObakSettings } from "./settings";
 import { serializeCardEnd } from "./syntax";
 import type {
 	CardIndexRecord,
@@ -16,7 +16,7 @@ import type {
 	PluginIndex,
 	ScannedFile,
 	SyncToAnkiResult,
-	WhyingAnkiPluginApi,
+	ObakPluginApi,
 } from "./types";
 
 interface CardRewrite {
@@ -71,14 +71,14 @@ interface UidConflictFilterResult {
 const SCAN_CONFIG_SIGNATURE_VERSION = 2;
 
 export async function validateMarkdownFile(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	file: TFile,
 ): Promise<ScannedFile> {
 	return scanMarkdownFile(plugin.app, file, plugin.settings);
 }
 
 export async function reconcileMissingFiles(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 ): Promise<{ missingFilePaths: string[]; removedUnsyncedCards: number }> {
 	const snapshot = plugin.indexStore.getSnapshot();
 	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
@@ -111,7 +111,7 @@ export async function reconcileMissingFiles(
 }
 
 export async function refreshLocalMetadataForFiles(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
 ): Promise<LocalRefreshResult> {
 	const indexSnapshot = plugin.indexStore.getSnapshot();
@@ -164,7 +164,7 @@ export async function refreshLocalMetadataForFiles(
 }
 
 export async function rebuildSyncIndex(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<LocalRefreshResult> {
 	const files = plugin.app.vault.getMarkdownFiles();
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
@@ -234,7 +234,7 @@ export async function rebuildSyncIndex(
 }
 
 export async function syncCardsToAnki(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<SyncToAnkiResult> {
 	await reconcileMissingFiles(plugin);
 	return syncCardsToAnkiForFiles(
@@ -246,7 +246,7 @@ export async function syncCardsToAnki(
 }
 
 export async function syncChangedCardsToAnki(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 ): Promise<SyncToAnkiResult> {
 	await reconcileMissingFiles(plugin);
 
@@ -275,7 +275,7 @@ export async function syncChangedCardsToAnki(
 }
 
 async function syncCardsToAnkiForFiles(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
 	scanConfigSignature: string,
 	advanceSyncCursor = false,
@@ -517,7 +517,7 @@ async function prepareScannedFile(
 }
 
 async function prepareSyncFiles(
-	plugin: Plugin & WhyingAnkiPluginApi,
+	plugin: Plugin & ObakPluginApi,
 	scannedFiles: ScannedFile[],
 	indexSnapshot: PluginIndex,
 	runtimeErrors: string[],
@@ -541,7 +541,7 @@ async function prepareSyncFiles(
 }
 
 async function ensureFileHasStableUids(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	preparedFile: PreparedScannedFile,
 	indexSnapshot: PluginIndex,
 	runtimeErrors: string[],
@@ -637,11 +637,11 @@ async function syncPreparedCard(
 		};
 	}
 
-	if (existingNote && existingNote.modelName !== WHYING_ANKI_MODEL_NAME) {
+	if (existingNote && existingNote.modelName !== OBAK_MODEL_NAME) {
 		result.runtimeErrors.push(
 			formatCardError(
 				card,
-				`Anki note ${existingNote.noteId} uses model "${existingNote.modelName}", but sync now requires "${WHYING_ANKI_MODEL_NAME}". Delete the old note and sync again.`,
+				`Anki note ${existingNote.noteId} uses model "${existingNote.modelName}", but sync now requires "${OBAK_MODEL_NAME}". Delete the old note and sync again.`,
 			),
 		);
 		return {
@@ -654,13 +654,13 @@ async function syncPreparedCard(
 	}
 
 	if (!card.noteId || existingNote === null) {
-		const createInput = buildWhyingNoteInput(card, null);
+		const createInput = buildObakNoteInput(card, null);
 		try {
-			const noteId = await client.addWhyingNote(createInput);
+			const noteId = await client.addObakNote(createInput);
 			result.cardsCreated += 1;
 
 			try {
-				await client.updateWhyingNote(noteId, buildWhyingNoteInput(card, noteId));
+				await client.updateObakNote(noteId, buildObakNoteInput(card, noteId));
 			} catch (error) {
 				result.runtimeErrors.push(
 					formatCardError(
@@ -708,9 +708,9 @@ async function syncPreparedCard(
 	}
 
 	try {
-		await client.updateWhyingNote(
+		await client.updateObakNote(
 			card.noteId,
-			buildWhyingNoteInput(card, card.noteId),
+			buildObakNoteInput(card, card.noteId),
 		);
 		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
@@ -780,7 +780,7 @@ function collectActiveNoteIds(preparedFiles: PreparedSyncFile[]): string[] {
 }
 
 async function commitFileRewrites(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	scannedFile: ScannedFile,
 	rewrites: CardRewrite[],
 	runtimeErrors: string[],
@@ -833,7 +833,7 @@ function formatCreateNoteErrorMessage(error: unknown): string {
 	return message;
 }
 
-function buildScanConfigSignature(settings: WhyingAnkiSettings): string {
+function buildScanConfigSignature(settings: ObakSettings): string {
 	return JSON.stringify({
 		version: SCAN_CONFIG_SIGNATURE_VERSION,
 		defaultDeck: settings.defaultDeck.trim(),
@@ -845,7 +845,7 @@ function buildScanConfigSignature(settings: WhyingAnkiSettings): string {
 }
 
 function processDeletedFiles(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path)),
 ): DeletedFileProcessingResult {
 	const snapshot = plugin.indexStore.getSnapshot();
@@ -886,7 +886,7 @@ function processDeletedFiles(
 }
 
 function filterScannedFilesWithUidConflicts(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	scannedFiles: ScannedFile[],
 	indexSnapshot: PluginIndex,
 ): UidConflictFilterResult {
@@ -975,9 +975,9 @@ async function buildBlockedCreateCardKeys(
 	}
 
 	try {
-		const canAddResults = await client.canAddWhyingNotes(
+		const canAddResults = await client.canAddObakNotes(
 			preflightCandidates.map((candidate) =>
-				buildWhyingNoteInput(candidate.state.finalCard, null),
+				buildObakNoteInput(candidate.state.finalCard, null),
 			),
 		);
 
@@ -1093,10 +1093,10 @@ async function recoverPreparedCardsByUid(
 	}
 }
 
-function buildWhyingNoteInput(
+function buildObakNoteInput(
 	card: ParsedCard,
 	ankiNoteId: string | null,
-): WhyingAnkiNoteInput {
+): ObakNoteInput {
 	if (!card.uid) {
 		throw new Error(`Missing card UID for ${getCardLocationKey(card)}.`);
 	}
@@ -1129,7 +1129,7 @@ function getCardLocationKey(card: Pick<ParsedCard, "filePath" | "startLine">): s
 }
 
 function selectFilesForIncrementalSync(
-	plugin: WhyingAnkiPluginApi,
+	plugin: ObakPluginApi,
 	indexSnapshot: PluginIndex,
 ): IncrementalSyncSelection {
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);

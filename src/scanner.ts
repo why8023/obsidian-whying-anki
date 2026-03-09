@@ -7,7 +7,7 @@ import {
 	resolveEffectiveDeck,
 	resolveEffectiveTags,
 } from "./normalize";
-import type { WhyingAnkiSettings } from "./settings";
+import type { ObakSettings } from "./settings";
 import { parseCardsFromMarkdown } from "./syntax";
 import type { FileDefaults, ParsedCard, ScannedFile } from "./types";
 import { buildObsidianFileUri } from "./uri";
@@ -15,7 +15,7 @@ import { buildObsidianFileUri } from "./uri";
 export async function scanMarkdownFiles(
 	app: App,
 	files: TFile[],
-	settings: WhyingAnkiSettings,
+	settings: ObakSettings,
 ): Promise<ScannedFile[]> {
 	return Promise.all(files.map((file) => scanMarkdownFile(app, file, settings)));
 }
@@ -23,7 +23,7 @@ export async function scanMarkdownFiles(
 export async function scanMarkdownFile(
 	app: App,
 	file: TFile,
-	settings: WhyingAnkiSettings,
+	settings: ObakSettings,
 ): Promise<ScannedFile> {
 	const text = await app.vault.read(file);
 	const parsed = parseCardsFromMarkdown(text, file.path);
