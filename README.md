@@ -71,6 +71,7 @@ Deck priority is:
 ## Commands
 
 - `Sync cards to Anki`
+- `Sync changed cards to Anki`
 - `Insert card template`
 - `Validate card syntax in current file`
 - `Refresh card metadata in current file`

@@ -3,6 +3,7 @@ import {
 	rebuildSyncIndex,
 	refreshLocalMetadataForFiles,
 	syncCardsToAnki,
+	syncChangedCardsToAnki,
 	validateMarkdownFile,
 } from "../sync-runner";
 import { registerEditorCommands } from "./editor-commands";
@@ -20,6 +21,14 @@ export function registerCommands(plugin: Plugin & WhyingAnkiPluginApi): void {
 		name: "Sync cards to Anki",
 		callback: () => {
 			void runSyncCardsToAnki(plugin);
+		},
+	});
+
+	plugin.addCommand({
+		id: "sync-changed-cards-to-anki",
+		name: "Sync changed cards to Anki",
+		callback: () => {
+			void runSyncChangedCardsToAnki(plugin);
 		},
 	});
 
@@ -100,7 +109,14 @@ async function runSyncCardsToAnki(
 	plugin: Plugin & WhyingAnkiPluginApi,
 ): Promise<void> {
 	const result = await syncCardsToAnki(plugin);
-	reportSyncResult(result);
+	reportSyncResult(result, "Synced");
+}
+
+async function runSyncChangedCardsToAnki(
+	plugin: Plugin & WhyingAnkiPluginApi,
+): Promise<void> {
+	const result = await syncChangedCardsToAnki(plugin);
+	reportSyncResult(result, "Incremental sync");
 }
 
 function reportResult(prefix: string, result: LocalRefreshResult): void {
@@ -116,15 +132,18 @@ function reportResult(prefix: string, result: LocalRefreshResult): void {
 	new Notice(message, 6000);
 }
 
-function reportSyncResult(result: SyncToAnkiResult): void {
+function reportSyncResult(
+	result: SyncToAnkiResult,
+	prefix: string,
+): void {
 	logParseErrors(result.parseErrors);
 	logRuntimeErrors(result.runtimeErrors);
 
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
 	const message =
 		issues === 0
-			? `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${result.cardsUnchanged} unchanged.`
-			: `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${issues} issue(s).`;
+			? `${prefix} ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${result.cardsUnchanged} unchanged.`
+			: `${prefix} ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${issues} issue(s).`;
 
 	new Notice(message, 7000);
 }

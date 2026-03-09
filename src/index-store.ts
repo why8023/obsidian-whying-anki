@@ -1,12 +1,13 @@
-import type { ParsedCard, PluginIndex } from "./types";
+import type { FileIndexRecord, ParsedCard, PluginIndex } from "./types";
 
-const INDEX_SCHEMA_VERSION = 1;
+const INDEX_SCHEMA_VERSION = 2;
 
 export function createEmptyPluginIndex(): PluginIndex {
 	return {
 		schemaVersion: INDEX_SCHEMA_VERSION,
 		cardsByUid: {},
 		uidsByFile: {},
+		filesByPath: {},
 		pendingDeleteNoteIds: [],
 		lastFullReconcileAt: null,
 	};
@@ -46,6 +47,24 @@ export class IndexStore {
 		);
 	}
 
+	invalidateFileState(filePath: string): void {
+		const existing = this.index.filesByPath[filePath];
+		if (!existing) {
+			return;
+		}
+
+		this.index.filesByPath[filePath] = {
+			...existing,
+			lastIndexedMtime: null,
+			lastIndexedSize: null,
+			lastScanConfigHash: null,
+		};
+	}
+
+	removeFileState(filePath: string): void {
+		delete this.index.filesByPath[filePath];
+	}
+
 	replace(index: PluginIndex): void {
 		this.index = clonePluginIndex(index);
 	}
@@ -56,18 +75,27 @@ export class IndexStore {
 
 	renameFile(oldPath: string, newPath: string): void {
 		const uids = this.index.uidsByFile[oldPath];
-		if (!uids) {
-			return;
+		if (uids) {
+			delete this.index.uidsByFile[oldPath];
+			this.index.uidsByFile[newPath] = [...uids];
+
+			for (const uid of uids) {
+				const record = this.index.cardsByUid[uid];
+				if (record) {
+					record.filePath = newPath;
+				}
+			}
 		}
 
-		delete this.index.uidsByFile[oldPath];
-		this.index.uidsByFile[newPath] = [...uids];
-
-		for (const uid of uids) {
-			const record = this.index.cardsByUid[uid];
-			if (record) {
-				record.filePath = newPath;
-			}
+		const fileState = this.index.filesByPath[oldPath];
+		if (fileState) {
+			delete this.index.filesByPath[oldPath];
+			this.index.filesByPath[newPath] = {
+				...fileState,
+				lastIndexedMtime: null,
+				lastIndexedSize: null,
+				lastScanConfigHash: null,
+			};
 		}
 	}
 
@@ -155,6 +183,10 @@ export class IndexStore {
 			delete this.index.uidsByFile[filePath];
 		}
 	}
+
+	setFileState(filePath: string, record: FileIndexRecord): void {
+		this.index.filesByPath[filePath] = { ...record };
+	}
 }
 
 function normalizePluginIndex(snapshot?: Partial<PluginIndex>): PluginIndex {
@@ -167,6 +199,7 @@ function normalizePluginIndex(snapshot?: Partial<PluginIndex>): PluginIndex {
 				: index.schemaVersion,
 		cardsByUid: snapshot?.cardsByUid ? { ...snapshot.cardsByUid } : {},
 		uidsByFile: snapshot?.uidsByFile ? cloneFileMap(snapshot.uidsByFile) : {},
+		filesByPath: snapshot?.filesByPath ? cloneFileStateMap(snapshot.filesByPath) : {},
 		pendingDeleteNoteIds: Array.isArray(snapshot?.pendingDeleteNoteIds)
 			? [...new Set(snapshot.pendingDeleteNoteIds.filter(isString))]
 			: [],
@@ -182,6 +215,7 @@ function clonePluginIndex(index: PluginIndex): PluginIndex {
 		schemaVersion: index.schemaVersion,
 		cardsByUid: { ...index.cardsByUid },
 		uidsByFile: cloneFileMap(index.uidsByFile),
+		filesByPath: cloneFileStateMap(index.filesByPath),
 		pendingDeleteNoteIds: [...index.pendingDeleteNoteIds],
 		lastFullReconcileAt: index.lastFullReconcileAt,
 	};
@@ -190,6 +224,14 @@ function clonePluginIndex(index: PluginIndex): PluginIndex {
 function cloneFileMap(fileMap: Record<string, string[]>): Record<string, string[]> {
 	return Object.fromEntries(
 		Object.entries(fileMap).map(([filePath, uids]) => [filePath, [...uids]]),
+	);
+}
+
+function cloneFileStateMap(
+	fileMap: Record<string, FileIndexRecord>,
+): Record<string, FileIndexRecord> {
+	return Object.fromEntries(
+		Object.entries(fileMap).map(([filePath, record]) => [filePath, { ...record }]),
 	);
 }
 

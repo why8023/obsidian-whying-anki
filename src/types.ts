@@ -65,10 +65,19 @@ export interface CardIndexRecord {
 	lastSeenAt: number;
 }
 
+export interface FileIndexRecord {
+	lastIndexedMtime: number | null;
+	lastIndexedSize: number | null;
+	lastScanConfigHash: string | null;
+	lastIndexedAt: number | null;
+	hasParseErrors: boolean;
+}
+
 export interface PluginIndex {
 	schemaVersion: number;
 	cardsByUid: Record<string, CardIndexRecord>;
 	uidsByFile: Record<string, string[]>;
+	filesByPath: Record<string, FileIndexRecord>;
 	pendingDeleteNoteIds: string[];
 	lastFullReconcileAt: number | null;
 }
@@ -83,6 +92,8 @@ export interface IndexStoreApi {
 	getPendingDeleteNoteIds(): string[];
 	queuePendingDelete(noteIds: string[]): void;
 	dequeuePendingDelete(noteIds: string[]): void;
+	invalidateFileState(filePath: string): void;
+	removeFileState(filePath: string): void;
 	removeCardsByNoteIds(noteIds: string[]): void;
 	removeCardsByUids(uids: string[]): void;
 	renameFile(oldPath: string, newPath: string): void;
@@ -91,6 +102,7 @@ export interface IndexStoreApi {
 		cards: ParsedCard[],
 		options?: { preserveUnseen?: boolean; preserveSyncedRev?: boolean },
 	): void;
+	setFileState(filePath: string, record: FileIndexRecord): void;
 	setLastFullReconcileAt(timestamp: number | null): void;
 	replace(index: PluginIndex): void;
 }
@@ -99,6 +111,12 @@ export interface WhyingAnkiPluginApi {
 	app: App;
 	settings: WhyingAnkiSettings;
 	indexStore: IndexStoreApi;
+	clearFileDirty(filePath: string): void;
+	clearFilesDirty(filePaths: Iterable<string>): void;
+	consumeInternalFileWrite(filePath: string): boolean;
+	getDirtyFilePaths(): string[];
+	markFileDirty(filePath: string): void;
+	registerInternalFileWrite(filePath: string): void;
 	savePluginData(): Promise<void>;
 }
 
