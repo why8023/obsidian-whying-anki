@@ -5,7 +5,7 @@ import { registerObsidianEventHandlers } from "./obsidian-events";
 import {
 	DEFAULT_SETTINGS,
 	ObakSettingTab,
-	normalizeSettings,
+	loadSettings,
 	type ObakSettings,
 } from "./settings";
 import { reconcileMissingFiles } from "./sync-runner";
@@ -22,7 +22,7 @@ export default class ObakPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		const data = (await this.loadData()) as StoredPluginData | null;
-		this.settings = normalizeSettings(data?.settings);
+		this.settings = loadSettings(data?.settings);
 		this.indexStore = new IndexStore(data?.index);
 
 		this.addSettingTab(new ObakSettingTab(this.app, this));

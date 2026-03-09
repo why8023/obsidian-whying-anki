@@ -31,14 +31,6 @@ export function buildScopedDefaultDeck(
 		: "";
 }
 
-export function normalizeCardUid(value: string | null | undefined): string | null {
-	if (!value) {
-		return null;
-	}
-
-	return value.startsWith("c_") ? value.slice(2) : value;
-}
-
 export function normalizeTags(values: Iterable<string>): string[] {
 	const seen = new Set<string>();
 	const normalized: string[] = [];

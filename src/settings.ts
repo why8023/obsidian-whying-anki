@@ -23,23 +23,12 @@ interface SettingsHost {
 	savePluginData(): Promise<void>;
 }
 
-export function normalizeSettings(
-	settings?: Partial<ObakSettings>,
-): ObakSettings {
-	return {
-		defaultDeck: settings?.defaultDeck?.trim() ?? DEFAULT_SETTINGS.defaultDeck,
-		defaultTags: normalizeStoredTags(settings?.defaultTags),
-		ankiHost: settings?.ankiHost?.trim() || DEFAULT_SETTINGS.ankiHost,
-		ankiPort:
-			typeof settings?.ankiPort === "number" && Number.isInteger(settings.ankiPort)
-				? settings.ankiPort
-				: DEFAULT_SETTINGS.ankiPort,
-		autoCreateMissingDecks:
-			settings?.autoCreateMissingDecks ??
-			DEFAULT_SETTINGS.autoCreateMissingDecks,
-		reconcileOnStartup:
-			settings?.reconcileOnStartup ?? DEFAULT_SETTINGS.reconcileOnStartup,
-	};
+export function loadSettings(settings?: unknown): ObakSettings {
+	if (!isObakSettings(settings)) {
+		return cloneSettings(DEFAULT_SETTINGS);
+	}
+
+	return cloneSettings(settings);
 }
 
 export class ObakSettingTab extends PluginSettingTab {
@@ -137,18 +126,11 @@ export class ObakSettingTab extends PluginSettingTab {
 	}
 }
 
-function normalizeStoredTags(value: unknown): string[] {
-	if (Array.isArray(value)) {
-		return value
-			.filter((entry): entry is string => typeof entry === "string")
-			.flatMap((entry) => parseCommaSeparated(entry));
-	}
-
-	if (typeof value === "string") {
-		return parseCommaSeparated(value);
-	}
-
-	return [...DEFAULT_SETTINGS.defaultTags];
+function cloneSettings(settings: ObakSettings): ObakSettings {
+	return {
+		...settings,
+		defaultTags: [...settings.defaultTags],
+	};
 }
 
 function parseCommaSeparated(value: string): string[] {
@@ -166,4 +148,25 @@ function parseCommaSeparated(value: string): string[] {
 	}
 
 	return normalized;
+}
+
+function isObakSettings(value: unknown): value is ObakSettings {
+	return (
+		isStringRecord(value) &&
+		typeof value.defaultDeck === "string" &&
+		isStringArray(value.defaultTags) &&
+		typeof value.ankiHost === "string" &&
+		typeof value.ankiPort === "number" &&
+		Number.isInteger(value.ankiPort) &&
+		typeof value.autoCreateMissingDecks === "boolean" &&
+		typeof value.reconcileOnStartup === "boolean"
+	);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isStringRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

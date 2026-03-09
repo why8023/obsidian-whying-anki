@@ -5,7 +5,7 @@ import {
 	type ObakNoteInput,
 } from "./anki-model";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
-import { computeCardRevision, generateCardUid, normalizeCardUid } from "./normalize";
+import { computeCardRevision, generateCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
 import type { ObakSettings } from "./settings";
 import { serializeCardEnd } from "./syntax";
@@ -512,7 +512,7 @@ async function prepareScannedFile(
 	return {
 		scannedFile,
 		cards,
-		deletedUids: [...oldUids].filter((uid) => !newUids.has(normalizeCardUid(uid) ?? uid)),
+		deletedUids: [...oldUids].filter((uid) => !newUids.has(uid)),
 	};
 }
 
@@ -579,23 +579,7 @@ function findCardIndexRecord(
 	indexSnapshot: PluginIndex,
 	uid: string | null,
 ): CardIndexRecord | undefined {
-	if (!uid) {
-		return undefined;
-	}
-
-	const candidates = [uid];
-	if (!uid.startsWith("c_")) {
-		candidates.push(`c_${uid}`);
-	}
-
-	for (const candidate of candidates) {
-		const record = indexSnapshot.cardsByUid[candidate];
-		if (record) {
-			return record;
-		}
-	}
-
-	return undefined;
+	return uid ? indexSnapshot.cardsByUid[uid] : undefined;
 }
 
 function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[] {

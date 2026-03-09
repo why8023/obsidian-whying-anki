@@ -18,8 +18,8 @@ export function createEmptyPluginIndex(): PluginIndex {
 export class IndexStore {
 	private index: PluginIndex;
 
-	constructor(snapshot?: Partial<PluginIndex>) {
-		this.index = normalizePluginIndex(snapshot);
+	constructor(snapshot?: PluginIndex) {
+		this.index = loadPluginIndex(snapshot);
 	}
 
 	getSnapshot(): PluginIndex {
@@ -226,33 +226,12 @@ export class IndexStore {
 	}
 }
 
-function normalizePluginIndex(snapshot?: Partial<PluginIndex>): PluginIndex {
-	const index = createEmptyPluginIndex();
+function loadPluginIndex(snapshot?: unknown): PluginIndex {
+	if (!isPluginIndex(snapshot) || snapshot.schemaVersion !== INDEX_SCHEMA_VERSION) {
+		return createEmptyPluginIndex();
+	}
 
-	return {
-		schemaVersion:
-			typeof snapshot?.schemaVersion === "number"
-				? snapshot.schemaVersion
-				: index.schemaVersion,
-		cardsByUid: snapshot?.cardsByUid ? { ...snapshot.cardsByUid } : {},
-		uidsByFile: snapshot?.uidsByFile ? cloneFileMap(snapshot.uidsByFile) : {},
-		deletedFilePaths: Array.isArray(snapshot?.deletedFilePaths)
-			? [...new Set(snapshot.deletedFilePaths.filter(isString))]
-			: [],
-		pendingDeleteNoteIds: Array.isArray(snapshot?.pendingDeleteNoteIds)
-			? [...new Set(snapshot.pendingDeleteNoteIds.filter(isString))]
-			: [],
-		lastSyncAt:
-			typeof snapshot?.lastSyncAt === "number" ? snapshot.lastSyncAt : null,
-		lastScanConfigHash:
-			typeof snapshot?.lastScanConfigHash === "string"
-				? snapshot.lastScanConfigHash
-				: null,
-		lastFullReconcileAt:
-			typeof snapshot?.lastFullReconcileAt === "number"
-				? snapshot.lastFullReconcileAt
-				: null,
-	};
+	return clonePluginIndex(snapshot);
 }
 
 function clonePluginIndex(index: PluginIndex): PluginIndex {
@@ -274,6 +253,51 @@ function cloneFileMap(fileMap: Record<string, string[]>): Record<string, string[
 	);
 }
 
-function isString(value: unknown): value is string {
-	return typeof value === "string";
+function isPluginIndex(value: unknown): value is PluginIndex {
+	return (
+		isRecord(value) &&
+		typeof value.schemaVersion === "number" &&
+		isCardIndexRecordMap(value.cardsByUid) &&
+		isStringArrayMap(value.uidsByFile) &&
+		isStringArray(value.deletedFilePaths) &&
+		isStringArray(value.pendingDeleteNoteIds) &&
+		isNullableNumber(value.lastSyncAt) &&
+		isNullableString(value.lastScanConfigHash) &&
+		isNullableNumber(value.lastFullReconcileAt)
+	);
+}
+
+function isCardIndexRecordMap(value: unknown): value is PluginIndex["cardsByUid"] {
+	return isRecord(value) && Object.values(value).every(isCardIndexRecord);
+}
+
+function isCardIndexRecord(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		typeof value.uid === "string" &&
+		typeof value.filePath === "string" &&
+		isNullableString(value.ankiNoteId) &&
+		isNullableString(value.lastSyncedRev) &&
+		typeof value.lastSeenAt === "number"
+	);
+}
+
+function isStringArrayMap(value: unknown): value is Record<string, string[]> {
+	return isRecord(value) && Object.values(value).every(isStringArray);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+	return value === null || typeof value === "number";
+}
+
+function isNullableString(value: unknown): value is string | null {
+	return value === null || typeof value === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

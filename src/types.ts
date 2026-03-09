@@ -77,8 +77,8 @@ export interface PluginIndex {
 }
 
 export interface StoredPluginData {
-	settings?: Partial<ObakSettings>;
-	index?: Partial<PluginIndex>;
+	settings?: ObakSettings;
+	index?: PluginIndex;
 }
 
 export interface IndexStoreApi {

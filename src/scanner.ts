@@ -3,7 +3,6 @@ import { renderMarkdownMediaForAnki } from "./markdown-media";
 import {
 	detectPreferredNewline,
 	normalizeCardBody,
-	normalizeCardUid,
 	resolveEffectiveDeck,
 	resolveEffectiveTags,
 } from "./normalize";
@@ -49,7 +48,7 @@ export async function scanMarkdownFile(
 
 		return {
 			...card,
-			uid: normalizeCardUid(card.endMeta.uid),
+			uid: card.endMeta.uid,
 			noteId: card.endMeta.noteId,
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,
