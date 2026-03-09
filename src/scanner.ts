@@ -8,7 +8,7 @@ import {
 import type { WhyingAnkiSettings } from "./settings";
 import { parseCardsFromMarkdown } from "./syntax";
 import type { FileDefaults, ParsedCard, ScannedFile } from "./types";
-import { buildObsidianFileUri } from "./uri";
+import { appendObsidianLink, buildObsidianFileUri } from "./uri";
 
 export async function scanMarkdownFiles(
 	app: App,
@@ -29,6 +29,7 @@ export async function scanMarkdownFile(
 	const vaultName = app.vault.getName();
 
 	const cards: ParsedCard[] = parsed.cards.map((card) => {
+		const obUri = buildObsidianFileUri(vaultName, file.path);
 		const effectiveDeck = resolveEffectiveDeck(
 			card.startMeta.deck,
 			fileDefaults.deck,
@@ -40,6 +41,8 @@ export async function scanMarkdownFile(
 			card.startMeta.tags,
 		);
 
+		const backNormalizedBase = normalizeCardBody(card.backRaw);
+
 		return {
 			...card,
 			uid: card.endMeta.uid,
@@ -47,10 +50,12 @@ export async function scanMarkdownFile(
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,
 			frontNormalized: normalizeCardBody(card.frontRaw),
-			backNormalized: normalizeCardBody(card.backRaw),
+			backNormalized: settings.appendObsidianUriToBack
+				? appendObsidianLink(backNormalizedBase, obUri)
+				: backNormalizedBase,
 			effectiveDeck,
 			effectiveTags,
-			obUri: buildObsidianFileUri(vaultName, file.path),
+			obUri,
 		};
 	});
 

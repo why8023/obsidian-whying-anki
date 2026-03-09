@@ -111,7 +111,7 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Append Obsidian link")
-			.setDesc("Reserved for phase 4 source-link injection.")
+			.setDesc("Append a source link to the back field during sync.")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.appendObsidianUriToBack)

@@ -4,7 +4,7 @@ Obsidian desktop plugin for staged one-way sync from Obsidian card blocks into A
 
 ## Current status
 
-Phase 1 to phase 3 are implemented:
+Phase 1 to phase 4 are implemented:
 
 - Parse `card-start` / `card-back` / `card-end` blocks.
 - Validate card syntax per file.
@@ -18,10 +18,11 @@ Phase 1 to phase 3 are implemented:
 - Delete removed notes through the pending delete queue.
 - Handle file-path reconciliation at startup.
 - Preserve note mappings across file renames.
+- Append an Obsidian source link to the synced Back field.
 
 Planned next phases:
 
-- Phase 4: user experience improvements such as source links and richer commands.
+- Future work can focus on deeper UX polish and end-to-end integration tests.
 
 ## Card syntax
 
