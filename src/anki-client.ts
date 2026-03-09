@@ -10,6 +10,12 @@ interface AnkiConnectEnvelope<TResult> {
 	error: string | null;
 }
 
+interface AnkiConnectMultiAction {
+	action: string;
+	version: number;
+	params?: Record<string, unknown>;
+}
+
 export class AnkiConnectError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -20,7 +26,6 @@ export class AnkiConnectError extends Error {
 export class AnkiClient {
 	private readonly endpoint: string;
 	private readonly autoCreateMissingDecks: boolean;
-	private deckNamesCache: Set<string> | null = null;
 
 	constructor(
 		settings: Pick<
@@ -57,16 +62,45 @@ export class AnkiClient {
 		}
 	}
 
+	async ensureDecksExist(deckNames: Iterable<string>): Promise<void> {
+		if (!this.autoCreateMissingDecks) {
+			return;
+		}
+
+		const normalizedDeckNames = [
+			...new Set([...deckNames].map((deckName) => deckName.trim()).filter(Boolean)),
+		];
+		if (normalizedDeckNames.length === 0) {
+			return;
+		}
+
+		const results = await this.call<Array<AnkiConnectEnvelope<number> | number>>("multi", {
+			actions: normalizedDeckNames.map<AnkiConnectMultiAction>((deckName) => ({
+				action: "createDeck",
+				version: ANKI_CONNECT_VERSION,
+				params: { deck: deckName },
+			})),
+		});
+
+		const errors = results.flatMap((result, index) => {
+			if (!isAnkiConnectEnvelope(result) || !result.error) {
+				return [];
+			}
+
+			return [`${normalizedDeckNames[index]}: ${result.error}`];
+		});
+
+		if (errors.length > 0) {
+			throw new AnkiConnectError(`AnkiConnect createDeck failed: ${errors.join("; ")}`);
+		}
+	}
+
 	async addBasicNote(input: {
 		deckName: string;
 		front: string;
 		back: string;
 		tags: string[];
 	}): Promise<string> {
-		if (this.autoCreateMissingDecks) {
-			await this.ensureDeckExists(input.deckName);
-		}
-
 		const noteId = await this.call<number>("addNote", {
 			note: {
 				deckName: input.deckName,
@@ -128,32 +162,6 @@ export class AnkiClient {
 		return this.call<string[]>("modelFieldNames", { modelName });
 	}
 
-	private async getDeckNames(): Promise<string[]> {
-		return this.call<string[]>("deckNames");
-	}
-
-	private async createDeck(deckName: string): Promise<void> {
-		await this.call("createDeck", { deck: deckName });
-	}
-
-	private async ensureDeckExists(deckName: string): Promise<void> {
-		const normalizedDeckName = deckName.trim();
-		if (!normalizedDeckName) {
-			return;
-		}
-
-		if (!this.deckNamesCache) {
-			this.deckNamesCache = new Set(await this.getDeckNames());
-		}
-
-		if (this.deckNamesCache.has(normalizedDeckName)) {
-			return;
-		}
-
-		await this.createDeck(normalizedDeckName);
-		this.deckNamesCache.add(normalizedDeckName);
-	}
-
 	private async call<TResult>(
 		action: string,
 		params?: Record<string, unknown>,
@@ -183,4 +191,8 @@ export class AnkiClient {
 
 		return payload.result as TResult;
 	}
+}
+
+function isAnkiConnectEnvelope(value: unknown): value is AnkiConnectEnvelope<number> {
+	return value !== null && typeof value === "object" && "error" in value;
 }

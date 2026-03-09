@@ -186,6 +186,12 @@ export async function syncCardsToAnki(
 		scannedFiles.map((scannedFile) => prepareScannedFile(scannedFile, indexSnapshot)),
 	);
 
+	try {
+		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
+	} catch (error) {
+		result.runtimeErrors.push(asErrorMessage(error));
+	}
+
 	const deleteNoteIds = new Set<string>();
 	const orphanDeletedUids = new Set<string>();
 
@@ -345,6 +351,15 @@ function findCardIndexRecord(
 	}
 
 	return undefined;
+}
+
+function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[] {
+	return preparedFiles.flatMap((preparedFile) =>
+		preparedFile.cards
+			.filter((state) => !state.finalCard.noteId)
+			.map((state) => state.finalCard.effectiveDeck)
+			.filter(Boolean),
+	);
 }
 
 async function syncPreparedCard(

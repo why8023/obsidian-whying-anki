@@ -335,7 +335,6 @@ AnkiConnect 的 `modelNames`、`modelFieldNames` 可以用来校验当前环境�
 最小必需集合：
 
 * `version`
-* `deckNames`
 * `createDeck`
 * `modelNames`
 * `addNote`
@@ -344,7 +343,7 @@ AnkiConnect 的 `modelNames`、`modelFieldNames` 可以用来校验当前环境�
 * `notesInfo`
 * `multi`
 
-`guiBrowse` 不是同步必需，但可作为调试命令使用。`multi` 可减少多次往返请求。([GitHub][4])
+`guiBrowse` 不是同步必需，但可作为调试命令使用。`multi(createDeck...)` 可在同步前批量确保目标 deck 存在，不必先调用 `deckNames` 做预检查。([GitHub][4])
 
 ### 10.3 删除策略
 
@@ -579,7 +578,6 @@ type SyncPlan = {
 
 * HTTP POST 到 `127.0.0.1:8765`
 * `version`
-* `deckNames`
 * `createDeck`
 * `modelNames`
 * `addNote`
