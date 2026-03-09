@@ -23,6 +23,13 @@ interface AnkiConnectMultiAction {
 	params?: Record<string, unknown>;
 }
 
+interface BasicNoteInput {
+	back: string;
+	deckName: string;
+	front: string;
+	tags: string[];
+}
+
 export class AnkiConnectError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -108,19 +115,22 @@ export class AnkiClient {
 		back: string;
 		tags: string[];
 	}): Promise<string> {
+		const note = buildBasicNotePayload(input);
 		const noteId = await this.call<number>("addNote", {
-			note: {
-				deckName: input.deckName,
-				modelName: BASIC_MODEL_NAME,
-				fields: {
-					Front: input.front,
-					Back: input.back,
-				},
-				tags: input.tags,
-			},
+			note,
 		});
 
 		return String(noteId);
+	}
+
+	async canAddBasicNotes(inputs: BasicNoteInput[]): Promise<boolean[]> {
+		if (inputs.length === 0) {
+			return [];
+		}
+
+		return this.call<boolean[]>("canAddNotes", {
+			notes: inputs.map((input) => buildBasicNotePayload(input)),
+		});
 	}
 
 	async updateBasicNote(
@@ -251,6 +261,23 @@ export class AnkiClient {
 
 function isAnkiConnectEnvelope(value: unknown): value is AnkiConnectEnvelope<number> {
 	return value !== null && typeof value === "object" && "error" in value;
+}
+
+function buildBasicNotePayload(input: BasicNoteInput): {
+	deckName: string;
+	fields: { Back: string; Front: string };
+	modelName: string;
+	tags: string[];
+} {
+	return {
+		deckName: input.deckName,
+		modelName: BASIC_MODEL_NAME,
+		fields: {
+			Front: input.front,
+			Back: input.back,
+		},
+		tags: input.tags,
+	};
 }
 
 function parseNumericNoteId(noteId: string): number {

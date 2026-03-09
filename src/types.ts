@@ -65,20 +65,14 @@ export interface CardIndexRecord {
 	lastSeenAt: number;
 }
 
-export interface FileIndexRecord {
-	lastIndexedMtime: number | null;
-	lastIndexedSize: number | null;
-	lastScanConfigHash: string | null;
-	lastIndexedAt: number | null;
-	hasParseErrors: boolean;
-}
-
 export interface PluginIndex {
 	schemaVersion: number;
 	cardsByUid: Record<string, CardIndexRecord>;
 	uidsByFile: Record<string, string[]>;
-	filesByPath: Record<string, FileIndexRecord>;
+	deletedFilePaths: string[];
 	pendingDeleteNoteIds: string[];
+	lastSyncAt: number | null;
+	lastScanConfigHash: string | null;
 	lastFullReconcileAt: number | null;
 }
 
@@ -89,11 +83,13 @@ export interface StoredPluginData {
 
 export interface IndexStoreApi {
 	getSnapshot(): PluginIndex;
+	getDeletedFilePaths(): string[];
 	getPendingDeleteNoteIds(): string[];
+	markFileDeleted(filePath: string): boolean;
 	queuePendingDelete(noteIds: string[]): void;
 	dequeuePendingDelete(noteIds: string[]): void;
-	invalidateFileState(filePath: string): void;
-	removeFileState(filePath: string): void;
+	clearDeletedFile(filePath: string): void;
+	removeFileTracking(filePath: string): void;
 	removeCardsByNoteIds(noteIds: string[]): void;
 	removeCardsByUids(uids: string[]): void;
 	renameFile(oldPath: string, newPath: string): void;
@@ -102,7 +98,8 @@ export interface IndexStoreApi {
 		cards: ParsedCard[],
 		options?: { preserveUnseen?: boolean; preserveSyncedRev?: boolean },
 	): void;
-	setFileState(filePath: string, record: FileIndexRecord): void;
+	setLastScanConfigHash(signature: string | null): void;
+	setLastSyncAt(timestamp: number | null): void;
 	setLastFullReconcileAt(timestamp: number | null): void;
 	replace(index: PluginIndex): void;
 }

@@ -1,14 +1,16 @@
-import type { FileIndexRecord, ParsedCard, PluginIndex } from "./types";
+import type { ParsedCard, PluginIndex } from "./types";
 
-const INDEX_SCHEMA_VERSION = 2;
+const INDEX_SCHEMA_VERSION = 3;
 
 export function createEmptyPluginIndex(): PluginIndex {
 	return {
 		schemaVersion: INDEX_SCHEMA_VERSION,
 		cardsByUid: {},
 		uidsByFile: {},
-		filesByPath: {},
+		deletedFilePaths: [],
 		pendingDeleteNoteIds: [],
+		lastSyncAt: null,
+		lastScanConfigHash: null,
 		lastFullReconcileAt: null,
 	};
 }
@@ -24,8 +26,26 @@ export class IndexStore {
 		return clonePluginIndex(this.index);
 	}
 
+	getDeletedFilePaths(): string[] {
+		return [...this.index.deletedFilePaths];
+	}
+
 	getPendingDeleteNoteIds(): string[] {
 		return [...this.index.pendingDeleteNoteIds];
+	}
+
+	markFileDeleted(filePath: string): boolean {
+		const trackedUids = this.index.uidsByFile[filePath];
+		if (!trackedUids || trackedUids.length === 0) {
+			return false;
+		}
+
+		if (!this.index.deletedFilePaths.includes(filePath)) {
+			this.index.deletedFilePaths.push(filePath);
+			return true;
+		}
+
+		return false;
 	}
 
 	queuePendingDelete(noteIds: string[]): void {
@@ -47,26 +67,27 @@ export class IndexStore {
 		);
 	}
 
-	invalidateFileState(filePath: string): void {
-		const existing = this.index.filesByPath[filePath];
-		if (!existing) {
-			return;
-		}
-
-		this.index.filesByPath[filePath] = {
-			...existing,
-			lastIndexedMtime: null,
-			lastIndexedSize: null,
-			lastScanConfigHash: null,
-		};
+	clearDeletedFile(filePath: string): void {
+		this.index.deletedFilePaths = this.index.deletedFilePaths.filter(
+			(path) => path !== filePath,
+		);
 	}
 
-	removeFileState(filePath: string): void {
-		delete this.index.filesByPath[filePath];
+	removeFileTracking(filePath: string): void {
+		delete this.index.uidsByFile[filePath];
+		this.pruneDeletedFilePaths();
 	}
 
 	replace(index: PluginIndex): void {
 		this.index = clonePluginIndex(index);
+	}
+
+	setLastScanConfigHash(signature: string | null): void {
+		this.index.lastScanConfigHash = signature;
+	}
+
+	setLastSyncAt(timestamp: number | null): void {
+		this.index.lastSyncAt = timestamp;
 	}
 
 	setLastFullReconcileAt(timestamp: number | null): void {
@@ -87,16 +108,13 @@ export class IndexStore {
 			}
 		}
 
-		const fileState = this.index.filesByPath[oldPath];
-		if (fileState) {
-			delete this.index.filesByPath[oldPath];
-			this.index.filesByPath[newPath] = {
-				...fileState,
-				lastIndexedMtime: null,
-				lastIndexedSize: null,
-				lastScanConfigHash: null,
-			};
+		if (this.index.deletedFilePaths.includes(oldPath)) {
+			this.index.deletedFilePaths = this.index.deletedFilePaths.map((filePath) =>
+				filePath === oldPath ? newPath : filePath,
+			);
 		}
+
+		this.clearDeletedFile(newPath);
 	}
 
 	removeCardsByNoteIds(noteIds: string[]): void {
@@ -134,6 +152,8 @@ export class IndexStore {
 				delete this.index.uidsByFile[filePath];
 			}
 		}
+
+		this.pruneDeletedFilePaths();
 	}
 
 	setFileCards(
@@ -154,6 +174,18 @@ export class IndexStore {
 
 			nextUids.push(card.uid);
 			const existingRecord = this.index.cardsByUid[card.uid];
+			if (existingRecord && existingRecord.filePath !== filePath) {
+				const previousFileUids = this.index.uidsByFile[existingRecord.filePath];
+				if (previousFileUids) {
+					const remainingUids = previousFileUids.filter((uid) => uid !== card.uid);
+					if (remainingUids.length > 0) {
+						this.index.uidsByFile[existingRecord.filePath] = remainingUids;
+					} else {
+						delete this.index.uidsByFile[existingRecord.filePath];
+					}
+				}
+			}
+
 			this.index.cardsByUid[card.uid] = {
 				uid: card.uid,
 				filePath,
@@ -182,10 +214,15 @@ export class IndexStore {
 		} else {
 			delete this.index.uidsByFile[filePath];
 		}
+
+		this.clearDeletedFile(filePath);
+		this.pruneDeletedFilePaths();
 	}
 
-	setFileState(filePath: string, record: FileIndexRecord): void {
-		this.index.filesByPath[filePath] = { ...record };
+	private pruneDeletedFilePaths(): void {
+		this.index.deletedFilePaths = this.index.deletedFilePaths.filter(
+			(filePath) => Boolean(this.index.uidsByFile[filePath]),
+		);
 	}
 }
 
@@ -199,10 +236,18 @@ function normalizePluginIndex(snapshot?: Partial<PluginIndex>): PluginIndex {
 				: index.schemaVersion,
 		cardsByUid: snapshot?.cardsByUid ? { ...snapshot.cardsByUid } : {},
 		uidsByFile: snapshot?.uidsByFile ? cloneFileMap(snapshot.uidsByFile) : {},
-		filesByPath: snapshot?.filesByPath ? cloneFileStateMap(snapshot.filesByPath) : {},
+		deletedFilePaths: Array.isArray(snapshot?.deletedFilePaths)
+			? [...new Set(snapshot.deletedFilePaths.filter(isString))]
+			: [],
 		pendingDeleteNoteIds: Array.isArray(snapshot?.pendingDeleteNoteIds)
 			? [...new Set(snapshot.pendingDeleteNoteIds.filter(isString))]
 			: [],
+		lastSyncAt:
+			typeof snapshot?.lastSyncAt === "number" ? snapshot.lastSyncAt : null,
+		lastScanConfigHash:
+			typeof snapshot?.lastScanConfigHash === "string"
+				? snapshot.lastScanConfigHash
+				: null,
 		lastFullReconcileAt:
 			typeof snapshot?.lastFullReconcileAt === "number"
 				? snapshot.lastFullReconcileAt
@@ -215,8 +260,10 @@ function clonePluginIndex(index: PluginIndex): PluginIndex {
 		schemaVersion: index.schemaVersion,
 		cardsByUid: { ...index.cardsByUid },
 		uidsByFile: cloneFileMap(index.uidsByFile),
-		filesByPath: cloneFileStateMap(index.filesByPath),
+		deletedFilePaths: [...index.deletedFilePaths],
 		pendingDeleteNoteIds: [...index.pendingDeleteNoteIds],
+		lastSyncAt: index.lastSyncAt,
+		lastScanConfigHash: index.lastScanConfigHash,
 		lastFullReconcileAt: index.lastFullReconcileAt,
 	};
 }
@@ -224,14 +271,6 @@ function clonePluginIndex(index: PluginIndex): PluginIndex {
 function cloneFileMap(fileMap: Record<string, string[]>): Record<string, string[]> {
 	return Object.fromEntries(
 		Object.entries(fileMap).map(([filePath, uids]) => [filePath, [...uids]]),
-	);
-}
-
-function cloneFileStateMap(
-	fileMap: Record<string, FileIndexRecord>,
-): Record<string, FileIndexRecord> {
-	return Object.fromEntries(
-		Object.entries(fileMap).map(([filePath, record]) => [filePath, { ...record }]),
 	);
 }
 

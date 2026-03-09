@@ -7,7 +7,6 @@ import type { WhyingAnkiSettings } from "./settings";
 import { serializeCardEnd } from "./syntax";
 import type {
 	CardIndexRecord,
-	FileIndexRecord,
 	LocalRefreshResult,
 	ParsedCard,
 	PluginIndex,
@@ -44,6 +43,22 @@ interface IncrementalSyncSelection {
 	staleDirtyPaths: string[];
 }
 
+interface DeletedFileProcessingResult {
+	changed: boolean;
+	filePaths: string[];
+	removedUnsyncedCards: number;
+}
+
+interface PendingCreateCandidate {
+	existingNote: AnkiNoteInfo | null;
+	state: PreparedCardState;
+}
+
+interface UidConflictFilterResult {
+	conflictMessages: string[];
+	safeScannedFiles: ScannedFile[];
+}
+
 const SCAN_CONFIG_SIGNATURE_VERSION = 1;
 
 export async function validateMarkdownFile(
@@ -58,49 +73,50 @@ export async function reconcileMissingFiles(
 ): Promise<{ missingFilePaths: string[]; removedUnsyncedCards: number }> {
 	const snapshot = plugin.indexStore.getSnapshot();
 	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
-	const trackedPaths = new Set([
-		...Object.keys(snapshot.uidsByFile),
-		...Object.keys(snapshot.filesByPath),
-	]);
-	const missingFilePaths = [...trackedPaths].filter(
+	const trackedPaths = Object.keys(snapshot.uidsByFile);
+	const missingFilePaths = trackedPaths.filter(
 		(filePath) => !currentPaths.has(filePath),
 	);
-	let removedUnsyncedCards = 0;
+	let changed = false;
 
 	for (const filePath of missingFilePaths) {
-		const uids = snapshot.uidsByFile[filePath] ?? [];
-		const syncedNoteIds = uids
-			.map((uid) => snapshot.cardsByUid[uid]?.ankiNoteId)
-			.filter((noteId): noteId is string => Boolean(noteId));
-		const unsyncedUids = uids.filter((uid) => !snapshot.cardsByUid[uid]?.ankiNoteId);
-
-		plugin.indexStore.queuePendingDelete(syncedNoteIds);
-		plugin.indexStore.removeCardsByUids(unsyncedUids);
-		plugin.indexStore.removeFileState(filePath);
-		plugin.clearFileDirty(filePath);
-		removedUnsyncedCards += unsyncedUids.length;
+		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
 	}
 
+	const deletedResult = processDeletedFiles(plugin, currentPaths);
 	plugin.indexStore.setLastFullReconcileAt(Date.now());
 
-	if (missingFilePaths.length > 0 || removedUnsyncedCards > 0) {
+	if (
+		changed ||
+		deletedResult.changed ||
+		deletedResult.filePaths.length > 0 ||
+		deletedResult.removedUnsyncedCards > 0
+	) {
 		await plugin.savePluginData();
 	}
 
-	return { missingFilePaths, removedUnsyncedCards };
+	return {
+		missingFilePaths: deletedResult.filePaths,
+		removedUnsyncedCards: deletedResult.removedUnsyncedCards,
+	};
 }
 
 export async function refreshLocalMetadataForFiles(
 	plugin: Plugin & WhyingAnkiPluginApi,
 	files: TFile[],
 ): Promise<LocalRefreshResult> {
-	const scannedFiles = await scanMarkdownFiles(plugin.app, files, plugin.settings);
-	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
+	const scannedFiles = filterScannedFilesWithUidConflicts(
+		plugin,
+		await scanMarkdownFiles(plugin.app, files, plugin.settings),
+		indexSnapshot,
+	);
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
 
-	for (const scannedFile of scannedFiles) {
+	result.runtimeErrors.push(...scannedFiles.conflictMessages);
+
+	for (const scannedFile of scannedFiles.safeScannedFiles) {
 		result.filesProcessed += 1;
 		result.cardsProcessed += scannedFile.cards.length;
 		result.parseErrors.push(...scannedFile.errors);
@@ -130,17 +146,7 @@ export async function refreshLocalMetadataForFiles(
 				preserveSyncedRev: true,
 			},
 		);
-		if (
-			updateTrackedFileState(
-				plugin,
-				plugin.indexStore,
-				scannedFile.file.path,
-				scanConfigSignature,
-				scannedFile.errors.length > 0,
-			)
-		) {
-			cleanFilePaths.push(scannedFile.file.path);
-		}
+		cleanFilePaths.push(scannedFile.file.path);
 	}
 
 	await plugin.savePluginData();
@@ -152,18 +158,30 @@ export async function rebuildSyncIndex(
 	plugin: Plugin & WhyingAnkiPluginApi,
 ): Promise<LocalRefreshResult> {
 	const files = plugin.app.vault.getMarkdownFiles();
-	const scannedFiles = await scanMarkdownFiles(plugin.app, files, plugin.settings);
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
+	const scannedFiles = filterScannedFilesWithUidConflicts(
+		plugin,
+		await scanMarkdownFiles(plugin.app, files, plugin.settings),
+		indexSnapshot,
+	);
 	const rebuiltIndex = createEmptyPluginIndex();
 	const rebuiltStore = new IndexStore(rebuiltIndex);
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
 
+	if (scannedFiles.conflictMessages.length > 0) {
+		result.runtimeErrors.push(...scannedFiles.conflictMessages);
+		result.runtimeErrors.push(
+			"Rebuild aborted because duplicate card UID conflicts must be resolved first.",
+		);
+		return result;
+	}
+
 	rebuiltIndex.pendingDeleteNoteIds = plugin.indexStore.getPendingDeleteNoteIds();
 	rebuiltIndex.lastFullReconcileAt = Date.now();
 
-	for (const scannedFile of scannedFiles) {
+	for (const scannedFile of scannedFiles.safeScannedFiles) {
 		result.filesProcessed += 1;
 		result.cardsProcessed += scannedFile.cards.length;
 		result.parseErrors.push(...scannedFile.errors);
@@ -190,18 +208,11 @@ export async function rebuildSyncIndex(
 			prepared.cards.map((card) => card.finalCard),
 			{ preserveSyncedRev: true },
 		);
-		if (
-			updateTrackedFileState(
-				plugin,
-				rebuiltStore,
-				scannedFile.file.path,
-				scanConfigSignature,
-				scannedFile.errors.length > 0,
-			)
-		) {
-			cleanFilePaths.push(scannedFile.file.path);
-		}
+		cleanFilePaths.push(scannedFile.file.path);
 	}
+
+	rebuiltStore.setLastSyncAt(Date.now());
+	rebuiltStore.setLastScanConfigHash(scanConfigSignature);
 
 	plugin.indexStore.replace({
 		...rebuiltStore.getSnapshot(),
@@ -221,6 +232,7 @@ export async function syncCardsToAnki(
 		plugin,
 		plugin.app.vault.getMarkdownFiles(),
 		buildScanConfigSignature(plugin.settings),
+		true,
 	);
 }
 
@@ -239,6 +251,9 @@ export async function syncChangedCardsToAnki(
 		selection.files.length === 0 &&
 		plugin.indexStore.getPendingDeleteNoteIds().length === 0
 	) {
+		plugin.indexStore.setLastSyncAt(Date.now());
+		plugin.indexStore.setLastScanConfigHash(selection.scanConfigSignature);
+		await plugin.savePluginData();
 		return createSyncResult();
 	}
 
@@ -246,6 +261,7 @@ export async function syncChangedCardsToAnki(
 		plugin,
 		selection.files,
 		selection.scanConfigSignature,
+		true,
 	);
 }
 
@@ -253,12 +269,21 @@ async function syncCardsToAnkiForFiles(
 	plugin: Plugin & WhyingAnkiPluginApi,
 	files: TFile[],
 	scanConfigSignature: string,
+	advanceSyncCursor = false,
 ): Promise<SyncToAnkiResult> {
-	const scannedFiles = await scanMarkdownFiles(plugin.app, files, plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
+	const scannedFiles = filterScannedFilesWithUidConflicts(
+		plugin,
+		await scanMarkdownFiles(plugin.app, files, plugin.settings),
+		indexSnapshot,
+	);
 	const result = createSyncResult();
 	const client = new AnkiClient(plugin.settings);
 	const cleanFilePaths: string[] = [];
+
+	for (const message of scannedFiles.conflictMessages) {
+		result.runtimeErrors.push(message);
+	}
 
 	try {
 		await client.ensureReadyForBasicSync();
@@ -269,7 +294,7 @@ async function syncCardsToAnkiForFiles(
 
 	const preparedFiles = await prepareSyncFiles(
 		plugin,
-		scannedFiles,
+		scannedFiles.safeScannedFiles,
 		indexSnapshot,
 		result.runtimeErrors,
 	);
@@ -290,6 +315,13 @@ async function syncCardsToAnkiForFiles(
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
 	}
+
+	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
+		client,
+		preparedFiles,
+		existingNotesById,
+		result.runtimeErrors,
+	);
 
 	const deleteNoteIds = new Set<string>();
 	const orphanDeletedUids = new Set<string>();
@@ -347,6 +379,7 @@ async function syncCardsToAnkiForFiles(
 						? existingNotesById.get(state.finalCard.noteId) ?? null
 						: null,
 					result,
+					!blockedCreateCardKeys.has(getCardLocationKey(state.finalCard)),
 				),
 			);
 		}
@@ -374,20 +407,15 @@ async function syncCardsToAnkiForFiles(
 		);
 
 		if (!rewriteRequired || rewritten) {
-			if (
-				updateTrackedFileState(
-					plugin,
-					plugin.indexStore,
-					scannedFile.file.path,
-					scanConfigSignature,
-					scannedFile.errors.length > 0,
-				)
-			) {
-				cleanFilePaths.push(scannedFile.file.path);
-			}
+			cleanFilePaths.push(scannedFile.file.path);
 		} else {
 			plugin.markFileDirty(scannedFile.file.path);
 		}
+	}
+
+	if (advanceSyncCursor) {
+		plugin.indexStore.setLastSyncAt(Date.now());
+		plugin.indexStore.setLastScanConfigHash(scanConfigSignature);
 	}
 
 	await plugin.savePluginData();
@@ -554,6 +582,7 @@ async function syncPreparedCard(
 	state: PreparedCardState,
 	existingNote: AnkiNoteInfo | null,
 	result: SyncToAnkiResult,
+	allowCreate: boolean,
 ): Promise<PreparedCardState> {
 	const card = state.finalCard;
 
@@ -564,6 +593,17 @@ async function syncPreparedCard(
 			finalCard: {
 				...card,
 				rev: state.previousSyncedRev,
+			},
+		};
+	}
+
+	if (!allowCreate) {
+		return {
+			...state,
+			finalCard: {
+				...card,
+				noteId: null,
+				rev: null,
 			},
 		};
 	}
@@ -586,7 +626,9 @@ async function syncPreparedCard(
 				},
 			};
 		} catch (error) {
-			result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
+			result.runtimeErrors.push(
+				formatCardError(card, formatCreateNoteErrorMessage(error)),
+			);
 			return {
 				...state,
 				finalCard: {
@@ -721,6 +763,15 @@ function asErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function formatCreateNoteErrorMessage(error: unknown): string {
+	const message = asErrorMessage(error);
+	if (message.includes("cannot create note because it is a duplicate")) {
+		return "Cannot create note because Front duplicates an existing Anki Basic note.";
+	}
+
+	return message;
+}
+
 function buildScanConfigSignature(settings: WhyingAnkiSettings): string {
 	return JSON.stringify({
 		version: SCAN_CONFIG_SIGNATURE_VERSION,
@@ -733,24 +784,240 @@ function buildScanConfigSignature(settings: WhyingAnkiSettings): string {
 	});
 }
 
+function processDeletedFiles(
+	plugin: WhyingAnkiPluginApi,
+	currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path)),
+): DeletedFileProcessingResult {
+	const snapshot = plugin.indexStore.getSnapshot();
+	let changed = false;
+	const filePaths: string[] = [];
+	let removedUnsyncedCards = 0;
+
+	for (const filePath of snapshot.deletedFilePaths) {
+		if (currentPaths.has(filePath)) {
+			plugin.indexStore.clearDeletedFile(filePath);
+			changed = true;
+			continue;
+		}
+
+		const uids = snapshot.uidsByFile[filePath] ?? [];
+		if (uids.length === 0) {
+			plugin.indexStore.clearDeletedFile(filePath);
+			changed = true;
+			continue;
+		}
+
+		const syncedNoteIds = uids
+			.map((uid) => snapshot.cardsByUid[uid]?.ankiNoteId)
+			.filter((noteId): noteId is string => Boolean(noteId));
+		const unsyncedUids = uids.filter((uid) => !snapshot.cardsByUid[uid]?.ankiNoteId);
+
+		plugin.indexStore.queuePendingDelete(syncedNoteIds);
+		plugin.indexStore.removeCardsByUids(unsyncedUids);
+		plugin.indexStore.removeFileTracking(filePath);
+		plugin.indexStore.clearDeletedFile(filePath);
+		plugin.clearFileDirty(filePath);
+		changed = true;
+		filePaths.push(filePath);
+		removedUnsyncedCards += unsyncedUids.length;
+	}
+
+	return { changed, filePaths, removedUnsyncedCards };
+}
+
+function filterScannedFilesWithUidConflicts(
+	plugin: WhyingAnkiPluginApi,
+	scannedFiles: ScannedFile[],
+	indexSnapshot: PluginIndex,
+): UidConflictFilterResult {
+	const claimsByUid = new Map<string, ParsedCard[]>();
+	const scannedFilePaths = new Set(scannedFiles.map((scannedFile) => scannedFile.file.path));
+	const conflictMessages: string[] = [];
+	const conflictedFilePaths = new Set<string>();
+
+	for (const scannedFile of scannedFiles) {
+		for (const card of scannedFile.cards) {
+			if (!card.uid) {
+				continue;
+			}
+
+			const claims = claimsByUid.get(card.uid) ?? [];
+			claims.push(card);
+			claimsByUid.set(card.uid, claims);
+		}
+	}
+
+	for (const [uid, claims] of claimsByUid.entries()) {
+		if (claims.length > 1) {
+			conflictMessages.push(
+				`Duplicate card UID "${uid}" found at ${formatCardLocations(claims)}. Keep each card UID unique across the vault.`,
+			);
+			for (const claim of claims) {
+				conflictedFilePaths.add(claim.filePath);
+			}
+			continue;
+		}
+
+		const claim = claims[0];
+		if (!claim) {
+			continue;
+		}
+
+		const existingRecord = findCardIndexRecord(indexSnapshot, uid);
+		if (!existingRecord || existingRecord.filePath === claim.filePath) {
+			continue;
+		}
+
+		if (!plugin.app.vault.getFileByPath(existingRecord.filePath)) {
+			continue;
+		}
+
+		if (scannedFilePaths.has(existingRecord.filePath)) {
+			continue;
+		}
+
+		conflictMessages.push(
+			`Duplicate card UID "${uid}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingRecord.filePath}. Remove the duplicate or move the original card first.`,
+		);
+		conflictedFilePaths.add(claim.filePath);
+	}
+
+	for (const filePath of conflictedFilePaths) {
+		plugin.markFileDirty(filePath);
+	}
+
+	return {
+		conflictMessages,
+		safeScannedFiles: scannedFiles.filter(
+			(scannedFile) => !conflictedFilePaths.has(scannedFile.file.path),
+		),
+	};
+}
+
+async function buildBlockedCreateCardKeys(
+	client: AnkiClient,
+	preparedFiles: PreparedSyncFile[],
+	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
+	runtimeErrors: string[],
+): Promise<Set<string>> {
+	const blockedCardKeys = new Set<string>();
+	const createCandidates = collectCreateCandidates(preparedFiles, existingNotesById);
+
+	blockBatchDuplicateFronts(createCandidates, runtimeErrors, blockedCardKeys);
+
+	const remainingCandidates = createCandidates.filter(
+		(candidate) => !blockedCardKeys.has(getCardLocationKey(candidate.state.finalCard)),
+	);
+	const preflightCandidates = remainingCandidates.filter((candidate) =>
+		Boolean(candidate.state.finalCard.effectiveDeck.trim()),
+	);
+	if (preflightCandidates.length === 0) {
+		return blockedCardKeys;
+	}
+
+	try {
+		const canAddResults = await client.canAddBasicNotes(
+			preflightCandidates.map((candidate) => ({
+				deckName: candidate.state.finalCard.effectiveDeck,
+				front: candidate.state.finalCard.frontNormalized,
+				back: candidate.state.finalCard.backNormalized,
+				tags: candidate.state.finalCard.effectiveTags,
+			})),
+		);
+
+		preflightCandidates.forEach((candidate, index) => {
+			if (canAddResults[index]) {
+				return;
+			}
+
+			blockedCardKeys.add(getCardLocationKey(candidate.state.finalCard));
+			runtimeErrors.push(
+				formatCardError(
+					candidate.state.finalCard,
+					"Cannot create note in Anki. Preflight check failed; this usually means Front duplicates an existing Basic note.",
+				),
+			);
+		});
+	} catch (error) {
+		runtimeErrors.push(`Anki preflight check failed: ${asErrorMessage(error)}`);
+	}
+
+	return blockedCardKeys;
+}
+
+function collectCreateCandidates(
+	preparedFiles: PreparedSyncFile[],
+	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
+): PendingCreateCandidate[] {
+	return preparedFiles.flatMap((preparedFile) =>
+		preparedFile.cards
+			.map((state) => ({
+				state,
+				existingNote: state.finalCard.noteId
+					? existingNotesById.get(state.finalCard.noteId) ?? null
+					: null,
+			}))
+			.filter((candidate) => !candidate.state.finalCard.noteId || candidate.existingNote === null),
+	);
+}
+
+function blockBatchDuplicateFronts(
+	createCandidates: PendingCreateCandidate[],
+	runtimeErrors: string[],
+	blockedCardKeys: Set<string>,
+): void {
+	const candidatesByFront = new Map<string, PendingCreateCandidate[]>();
+
+	for (const candidate of createCandidates) {
+		const frontKey = candidate.state.finalCard.frontNormalized.trim();
+		const bucket = candidatesByFront.get(frontKey) ?? [];
+		bucket.push(candidate);
+		candidatesByFront.set(frontKey, bucket);
+	}
+
+	for (const [frontKey, candidates] of candidatesByFront.entries()) {
+		if (!frontKey || candidates.length < 2) {
+			continue;
+		}
+
+		runtimeErrors.push(
+			`Cannot create notes with duplicate Front in the same sync batch: ${formatCardLocations(
+				candidates.map((candidate) => candidate.state.finalCard),
+			)}.`,
+		);
+		for (const candidate of candidates) {
+			blockedCardKeys.add(getCardLocationKey(candidate.state.finalCard));
+		}
+	}
+}
+
+function formatCardLocations(cards: Pick<ParsedCard, "filePath" | "startLine">[]): string {
+	return cards
+		.map((card) => `${card.filePath}:${card.startLine}`)
+		.join(", ");
+}
+
+function getCardLocationKey(card: Pick<ParsedCard, "filePath" | "startLine">): string {
+	return `${card.filePath}:${card.startLine}`;
+}
+
 function selectFilesForIncrementalSync(
 	plugin: WhyingAnkiPluginApi,
 	indexSnapshot: PluginIndex,
 ): IncrementalSyncSelection {
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const dirtyPaths = new Set(plugin.getDirtyFilePaths());
-	const filesByPath = new Map(
-		plugin.app.vault.getMarkdownFiles().map((file) => [file.path, file]),
-	);
+	const allFiles = plugin.app.vault.getMarkdownFiles();
+	const filesByPath = new Map(allFiles.map((file) => [file.path, file]));
 	const staleDirtyPaths = [...dirtyPaths].filter((filePath) => !filesByPath.has(filePath));
-	const files = [...filesByPath.values()].filter((file) =>
-		shouldIncrementallySyncFile(
-			file,
-			indexSnapshot.filesByPath[file.path],
-			dirtyPaths,
-			scanConfigSignature,
-		),
-	);
+	const forceFullScan =
+		indexSnapshot.lastSyncAt === null ||
+		indexSnapshot.lastScanConfigHash !== scanConfigSignature;
+	const files = forceFullScan
+		? allFiles
+		: allFiles.filter((file) =>
+				shouldIncrementallySyncFile(file, dirtyPaths, indexSnapshot.lastSyncAt),
+		  );
 
 	return {
 		files,
@@ -761,43 +1028,16 @@ function selectFilesForIncrementalSync(
 
 function shouldIncrementallySyncFile(
 	file: TFile,
-	fileRecord: FileIndexRecord | undefined,
 	dirtyPaths: ReadonlySet<string>,
-	scanConfigSignature: string,
+	lastSyncAt: number | null,
 ): boolean {
 	if (dirtyPaths.has(file.path)) {
 		return true;
 	}
 
-	if (!fileRecord) {
+	if (lastSyncAt === null) {
 		return true;
 	}
 
-	return (
-		fileRecord.lastIndexedMtime !== file.stat.mtime ||
-		fileRecord.lastIndexedSize !== file.stat.size ||
-		fileRecord.lastScanConfigHash !== scanConfigSignature
-	);
-}
-
-function updateTrackedFileState(
-	plugin: WhyingAnkiPluginApi,
-	indexStore: WhyingAnkiPluginApi["indexStore"],
-	filePath: string,
-	scanConfigSignature: string,
-	hasParseErrors: boolean,
-): boolean {
-	const file = plugin.app.vault.getFileByPath(filePath);
-	if (!file) {
-		return false;
-	}
-
-	indexStore.setFileState(filePath, {
-		lastIndexedMtime: file.stat.mtime,
-		lastIndexedSize: file.stat.size,
-		lastScanConfigHash: scanConfigSignature,
-		lastIndexedAt: Date.now(),
-		hasParseErrors,
-	});
-	return true;
+	return file.stat.mtime > lastSyncAt || file.stat.ctime > lastSyncAt;
 }

@@ -35,6 +35,10 @@ export function registerObsidianEventHandlers(
 					return;
 				}
 
+				if (plugin.indexStore.markFileDeleted(file.path)) {
+					void plugin.savePluginData();
+				}
+
 				plugin.clearFileDirty(file.path);
 			}),
 		);
