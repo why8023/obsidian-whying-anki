@@ -1,15 +1,23 @@
 import { requestUrl } from "obsidian";
+import {
+	WHYING_ANKI_CARD_TEMPLATES,
+	WHYING_ANKI_MODEL_CSS,
+	WHYING_ANKI_MODEL_FIELDS,
+	WHYING_ANKI_MODEL_NAME,
+	buildWhyingAnkiFields,
+	type WhyingAnkiModelFieldName,
+	type WhyingAnkiNoteInput,
+} from "./anki-model";
 import type { WhyingAnkiSettings } from "./settings";
 
 const ANKI_CONNECT_VERSION = 6;
-const BASIC_MODEL_NAME = "Basic";
-const BASIC_MODEL_FIELDS = ["Front", "Back"];
 
 export interface AnkiNoteInfo {
 	noteId: string;
 	modelName: string;
 	tags: string[];
 	cards: number[];
+	fields: Record<string, string>;
 }
 
 interface AnkiConnectEnvelope<TResult> {
@@ -21,13 +29,6 @@ interface AnkiConnectMultiAction {
 	action: string;
 	version: number;
 	params?: Record<string, unknown>;
-}
-
-interface BasicNoteInput {
-	back: string;
-	deckName: string;
-	front: string;
-	tags: string[];
 }
 
 export class AnkiConnectError extends Error {
@@ -51,7 +52,7 @@ export class AnkiClient {
 		this.autoCreateMissingDecks = settings.autoCreateMissingDecks;
 	}
 
-	async ensureReadyForBasicSync(): Promise<void> {
+	async ensureReadyForSync(): Promise<void> {
 		const version = await this.getVersion();
 		if (version < ANKI_CONNECT_VERSION) {
 			throw new AnkiConnectError(
@@ -59,21 +60,7 @@ export class AnkiClient {
 			);
 		}
 
-		const modelNames = await this.getModelNames();
-		if (!modelNames.includes(BASIC_MODEL_NAME)) {
-			throw new AnkiConnectError(
-				`Anki model "${BASIC_MODEL_NAME}" is not available.`,
-			);
-		}
-
-		const fieldNames = await this.getModelFieldNames(BASIC_MODEL_NAME);
-		for (const fieldName of BASIC_MODEL_FIELDS) {
-			if (!fieldNames.includes(fieldName)) {
-				throw new AnkiConnectError(
-					`Anki model "${BASIC_MODEL_NAME}" is missing field "${fieldName}".`,
-				);
-			}
-		}
+		await this.ensureWhyingModel();
 	}
 
 	async ensureDecksExist(deckNames: Iterable<string>): Promise<void> {
@@ -97,11 +84,12 @@ export class AnkiClient {
 		});
 
 		const errors = results.flatMap((result, index) => {
-			if (!isAnkiConnectEnvelope(result) || !result.error) {
+			const unwrappedResult = unwrapMultiActionResult<number>(result);
+			if (!unwrappedResult.error) {
 				return [];
 			}
 
-			return [`${normalizedDeckNames[index]}: ${result.error}`];
+			return [`${normalizedDeckNames[index]}: ${unwrappedResult.error}`];
 		});
 
 		if (errors.length > 0) {
@@ -109,42 +97,30 @@ export class AnkiClient {
 		}
 	}
 
-	async addBasicNote(input: {
-		deckName: string;
-		front: string;
-		back: string;
-		tags: string[];
-	}): Promise<string> {
-		const note = buildBasicNotePayload(input);
+	async addWhyingNote(input: WhyingAnkiNoteInput): Promise<string> {
 		const noteId = await this.call<number>("addNote", {
-			note,
+			note: buildWhyingNotePayload(input),
 		});
 
 		return String(noteId);
 	}
 
-	async canAddBasicNotes(inputs: BasicNoteInput[]): Promise<boolean[]> {
+	async canAddWhyingNotes(inputs: WhyingAnkiNoteInput[]): Promise<boolean[]> {
 		if (inputs.length === 0) {
 			return [];
 		}
 
 		return this.call<boolean[]>("canAddNotes", {
-			notes: inputs.map((input) => buildBasicNotePayload(input)),
+			notes: inputs.map((input) => buildWhyingNotePayload(input)),
 		});
 	}
 
-	async updateBasicNote(
-		noteId: string,
-		fields: { back: string; front: string; tags: string[] },
-	): Promise<void> {
+	async updateWhyingNote(noteId: string, input: WhyingAnkiNoteInput): Promise<void> {
 		await this.call("updateNote", {
 			note: {
 				id: parseNumericNoteId(noteId),
-				fields: {
-					Front: fields.front,
-					Back: fields.back,
-				},
-				tags: fields.tags,
+				fields: buildWhyingAnkiFields(input.fields),
+				tags: input.tags,
 			},
 		});
 	}
@@ -159,6 +135,45 @@ export class AnkiClient {
 			cards: normalizedCardIds,
 			deck: deckName,
 		});
+	}
+
+	async findNotesByObsidianUid(
+		uids: string[],
+	): Promise<Map<string, string[]>> {
+		const normalizedUids = [...new Set(uids.map((uid) => uid.trim()).filter(Boolean))];
+		if (normalizedUids.length === 0) {
+			return new Map();
+		}
+
+		const results = await this.call<Array<AnkiConnectEnvelope<number[]> | number[]>>("multi", {
+			actions: normalizedUids.map<AnkiConnectMultiAction>((uid) => ({
+				action: "findNotes",
+				version: ANKI_CONNECT_VERSION,
+				params: {
+					query: buildObsidianUidQuery(uid),
+				},
+			})),
+		});
+
+		const noteIdsByUid = new Map<string, string[]>();
+
+		results.forEach((result, index) => {
+			const uid = normalizedUids[index];
+			if (!uid) {
+				return;
+			}
+
+			const unwrappedResult = unwrapMultiActionResult<number[]>(result);
+			if (unwrappedResult.error) {
+				throw new AnkiConnectError(
+					`AnkiConnect findNotes failed for ObsidianUid "${uid}": ${unwrappedResult.error}`,
+				);
+			}
+
+			noteIdsByUid.set(uid, normalizeNumericIds(unwrappedResult.result));
+		});
+
+		return noteIdsByUid;
 	}
 
 	async getNotesInfo(noteIds: string[]): Promise<Map<string, AnkiNoteInfo>> {
@@ -216,6 +231,37 @@ export class AnkiClient {
 		});
 	}
 
+	private async ensureWhyingModel(): Promise<void> {
+		const modelNames = await this.getModelNames();
+		if (!modelNames.includes(WHYING_ANKI_MODEL_NAME)) {
+			await this.createWhyingModel();
+			return;
+		}
+
+		const fieldNames = await this.getModelFieldNames(WHYING_ANKI_MODEL_NAME);
+		const sameFieldOrder =
+			fieldNames.length === WHYING_ANKI_MODEL_FIELDS.length &&
+			fieldNames.every(
+				(fieldName, index) => fieldName === WHYING_ANKI_MODEL_FIELDS[index],
+			);
+
+		if (!sameFieldOrder) {
+			throw new AnkiConnectError(
+				`Anki model "${WHYING_ANKI_MODEL_NAME}" exists but does not match the expected field schema. Delete the model and sync again.`,
+			);
+		}
+	}
+
+	private async createWhyingModel(): Promise<void> {
+		await this.call("createModel", {
+			modelName: WHYING_ANKI_MODEL_NAME,
+			inOrderFields: [...WHYING_ANKI_MODEL_FIELDS],
+			cardTemplates: WHYING_ANKI_CARD_TEMPLATES,
+			css: WHYING_ANKI_MODEL_CSS,
+			isCloze: false,
+		});
+	}
+
 	private async getVersion(): Promise<number> {
 		return this.call<number>("version");
 	}
@@ -259,25 +305,61 @@ export class AnkiClient {
 	}
 }
 
-function isAnkiConnectEnvelope(value: unknown): value is AnkiConnectEnvelope<number> {
-	return value !== null && typeof value === "object" && "error" in value;
-}
-
-function buildBasicNotePayload(input: BasicNoteInput): {
+function buildWhyingNotePayload(input: WhyingAnkiNoteInput): {
 	deckName: string;
-	fields: { Back: string; Front: string };
+	fields: Record<WhyingAnkiModelFieldName, string>;
 	modelName: string;
 	tags: string[];
 } {
 	return {
 		deckName: input.deckName,
-		modelName: BASIC_MODEL_NAME,
-		fields: {
-			Front: input.front,
-			Back: input.back,
-		},
+		modelName: WHYING_ANKI_MODEL_NAME,
+		fields: buildWhyingAnkiFields(input.fields),
 		tags: input.tags,
 	};
+}
+
+function unwrapMultiActionResult<TResult>(value: unknown): {
+	error: string | null;
+	result: TResult;
+} {
+	if (isAnkiConnectEnvelope<TResult>(value)) {
+		return {
+			error: value.error,
+			result: value.result,
+		};
+	}
+
+	return {
+		error: null,
+		result: value as TResult,
+	};
+}
+
+function isAnkiConnectEnvelope<TResult>(
+	value: unknown,
+): value is AnkiConnectEnvelope<TResult> {
+	return value !== null && typeof value === "object" && "error" in value;
+}
+
+function buildObsidianUidQuery(uid: string): string {
+	const escapedModelName = escapeAnkiSearchTerm(WHYING_ANKI_MODEL_NAME);
+	const escapedUid = escapeAnkiSearchTerm(uid);
+	return `note:"${escapedModelName}" ObsidianUid:"${escapedUid}"`;
+}
+
+function escapeAnkiSearchTerm(value: string): string {
+	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function normalizeNumericIds(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+
+	return value
+		.filter((entry): entry is number => Number.isInteger(entry))
+		.map((entry) => String(entry));
 }
 
 function parseNumericNoteId(noteId: string): number {
@@ -305,8 +387,10 @@ function parseAnkiNoteInfo(value: unknown): AnkiNoteInfo | null {
 		"cards" in value && Array.isArray(value.cards)
 			? value.cards.filter((cardId): cardId is number => Number.isInteger(cardId))
 			: null;
+	const fields =
+		"fields" in value ? parseAnkiNoteFields(value.fields) : null;
 
-	if (noteId === null || modelName === null || tags === null || cards === null) {
+	if (noteId === null || modelName === null || tags === null || cards === null || fields === null) {
 		return null;
 	}
 
@@ -315,5 +399,29 @@ function parseAnkiNoteInfo(value: unknown): AnkiNoteInfo | null {
 		modelName,
 		tags,
 		cards,
+		fields,
 	};
+}
+
+function parseAnkiNoteFields(value: unknown): Record<string, string> | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+
+	const fields: Record<string, string> = {};
+
+	for (const [fieldName, fieldValue] of Object.entries(value)) {
+		if (
+			!fieldValue ||
+			typeof fieldValue !== "object" ||
+			!("value" in fieldValue) ||
+			typeof fieldValue.value !== "string"
+		) {
+			return null;
+		}
+
+		fields[fieldName] = fieldValue.value;
+	}
+
+	return fields;
 }

@@ -1,5 +1,9 @@
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
+import {
+	WHYING_ANKI_MODEL_NAME,
+	type WhyingAnkiNoteInput,
+} from "./anki-model";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
 import { computeCardRevision, generateCardUid, normalizeCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
@@ -54,12 +58,17 @@ interface PendingCreateCandidate {
 	state: PreparedCardState;
 }
 
+interface UidRecoveryResult {
+	blockedCardKeys: Set<string>;
+	recoveredNoteIds: string[];
+}
+
 interface UidConflictFilterResult {
 	conflictMessages: string[];
 	safeScannedFiles: ScannedFile[];
 }
 
-const SCAN_CONFIG_SIGNATURE_VERSION = 1;
+const SCAN_CONFIG_SIGNATURE_VERSION = 2;
 
 export async function validateMarkdownFile(
 	plugin: WhyingAnkiPluginApi,
@@ -286,7 +295,7 @@ async function syncCardsToAnkiForFiles(
 	}
 
 	try {
-		await client.ensureReadyForBasicSync();
+		await client.ensureReadyForSync();
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
 		return result;
@@ -299,7 +308,6 @@ async function syncCardsToAnkiForFiles(
 		result.runtimeErrors,
 	);
 	const activeNoteIds = collectActiveNoteIds(preparedFiles);
-	plugin.indexStore.dequeuePendingDelete(activeNoteIds);
 
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
 	try {
@@ -316,11 +324,30 @@ async function syncCardsToAnkiForFiles(
 		result.runtimeErrors.push(asErrorMessage(error));
 	}
 
+	const uidRecoveryResult = await recoverPreparedCardsByUid(
+		client,
+		preparedFiles,
+		existingNotesById,
+		result.runtimeErrors,
+	);
+
+	if (uidRecoveryResult.recoveredNoteIds.length > 0) {
+		try {
+			const recoveredNotes = await client.getNotesInfo(uidRecoveryResult.recoveredNoteIds);
+			existingNotesById = new Map([...existingNotesById, ...recoveredNotes]);
+		} catch (error) {
+			result.runtimeErrors.push(asErrorMessage(error));
+		}
+	}
+
+	plugin.indexStore.dequeuePendingDelete(collectActiveNoteIds(preparedFiles));
+
 	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
 		client,
 		preparedFiles,
 		existingNotesById,
 		result.runtimeErrors,
+		uidRecoveryResult.blockedCardKeys,
 	);
 
 	const deleteNoteIds = new Set<string>();
@@ -457,6 +484,8 @@ async function prepareScannedFile(
 				effectiveTags: originalCard.effectiveTags,
 				frontNormalized: originalCard.frontNormalized,
 				backNormalized: originalCard.backNormalized,
+				obUri: originalCard.obUri,
+				obsidianPath: originalCard.filePath,
 			});
 
 			return {
@@ -608,16 +637,49 @@ async function syncPreparedCard(
 		};
 	}
 
-	if (!card.noteId || existingNote === null) {
-		try {
-			const noteId = await client.addBasicNote({
-				deckName: card.effectiveDeck,
-				front: card.frontNormalized,
-				back: card.backNormalized,
-				tags: card.effectiveTags,
-			});
+	if (existingNote && existingNote.modelName !== WHYING_ANKI_MODEL_NAME) {
+		result.runtimeErrors.push(
+			formatCardError(
+				card,
+				`Anki note ${existingNote.noteId} uses model "${existingNote.modelName}", but sync now requires "${WHYING_ANKI_MODEL_NAME}". Delete the old note and sync again.`,
+			),
+		);
+		return {
+			...state,
+			finalCard: {
+				...card,
+				rev: state.previousSyncedRev,
+			},
+		};
+	}
 
+	if (!card.noteId || existingNote === null) {
+		const createInput = buildWhyingNoteInput(card, null);
+		try {
+			const noteId = await client.addWhyingNote(createInput);
 			result.cardsCreated += 1;
+
+			try {
+				await client.updateWhyingNote(noteId, buildWhyingNoteInput(card, noteId));
+			} catch (error) {
+				result.runtimeErrors.push(
+					formatCardError(
+						card,
+						`Created note ${noteId}, but failed to finalize AnkiNoteId field: ${asErrorMessage(
+							error,
+						)}`,
+					),
+				);
+				return {
+					...state,
+					finalCard: {
+						...card,
+						noteId,
+						rev: null,
+					},
+				};
+			}
+
 			return {
 				...state,
 				finalCard: {
@@ -646,11 +708,10 @@ async function syncPreparedCard(
 	}
 
 	try {
-		await client.updateBasicNote(card.noteId, {
-			front: card.frontNormalized,
-			back: card.backNormalized,
-			tags: card.effectiveTags,
-		});
+		await client.updateWhyingNote(
+			card.noteId,
+			buildWhyingNoteInput(card, card.noteId),
+		);
 		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
 		return state;
@@ -766,7 +827,7 @@ function asErrorMessage(error: unknown): string {
 function formatCreateNoteErrorMessage(error: unknown): string {
 	const message = asErrorMessage(error);
 	if (message.includes("cannot create note because it is a duplicate")) {
-		return "Cannot create note because Front duplicates an existing Anki Basic note.";
+		return "Cannot create note because ObsidianUid already exists in Anki.";
 	}
 
 	return message;
@@ -780,7 +841,6 @@ function buildScanConfigSignature(settings: WhyingAnkiSettings): string {
 			.map((tag) => tag.trim())
 			.filter(Boolean)
 			.sort((left, right) => left.localeCompare(right)),
-		appendObsidianUriToBack: settings.appendObsidianUriToBack,
 	});
 }
 
@@ -899,11 +959,10 @@ async function buildBlockedCreateCardKeys(
 	preparedFiles: PreparedSyncFile[],
 	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
 	runtimeErrors: string[],
+	initialBlockedCardKeys: ReadonlySet<string> = new Set<string>(),
 ): Promise<Set<string>> {
-	const blockedCardKeys = new Set<string>();
+	const blockedCardKeys = new Set<string>(initialBlockedCardKeys);
 	const createCandidates = collectCreateCandidates(preparedFiles, existingNotesById);
-
-	blockBatchDuplicateFronts(createCandidates, runtimeErrors, blockedCardKeys);
 
 	const remainingCandidates = createCandidates.filter(
 		(candidate) => !blockedCardKeys.has(getCardLocationKey(candidate.state.finalCard)),
@@ -916,13 +975,10 @@ async function buildBlockedCreateCardKeys(
 	}
 
 	try {
-		const canAddResults = await client.canAddBasicNotes(
-			preflightCandidates.map((candidate) => ({
-				deckName: candidate.state.finalCard.effectiveDeck,
-				front: candidate.state.finalCard.frontNormalized,
-				back: candidate.state.finalCard.backNormalized,
-				tags: candidate.state.finalCard.effectiveTags,
-			})),
+		const canAddResults = await client.canAddWhyingNotes(
+			preflightCandidates.map((candidate) =>
+				buildWhyingNoteInput(candidate.state.finalCard, null),
+			),
 		);
 
 		preflightCandidates.forEach((candidate, index) => {
@@ -934,7 +990,7 @@ async function buildBlockedCreateCardKeys(
 			runtimeErrors.push(
 				formatCardError(
 					candidate.state.finalCard,
-					"Cannot create note in Anki. Preflight check failed; this usually means Front duplicates an existing Basic note.",
+					"Cannot create note in Anki. Preflight check failed; this usually means ObsidianUid already exists.",
 				),
 			);
 		});
@@ -961,34 +1017,105 @@ function collectCreateCandidates(
 	);
 }
 
-function blockBatchDuplicateFronts(
-	createCandidates: PendingCreateCandidate[],
+async function recoverPreparedCardsByUid(
+	client: AnkiClient,
+	preparedFiles: PreparedSyncFile[],
+	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
 	runtimeErrors: string[],
-	blockedCardKeys: Set<string>,
-): void {
-	const candidatesByFront = new Map<string, PendingCreateCandidate[]>();
+): Promise<UidRecoveryResult> {
+	const blockedCardKeys = new Set<string>();
+	const statesNeedingRecovery = preparedFiles.flatMap((preparedFile) =>
+		preparedFile.cards.filter((state) => {
+			const noteId = state.finalCard.noteId;
+			return !noteId || !existingNotesById.has(noteId);
+		}),
+	);
 
-	for (const candidate of createCandidates) {
-		const frontKey = candidate.state.finalCard.frontNormalized.trim();
-		const bucket = candidatesByFront.get(frontKey) ?? [];
-		bucket.push(candidate);
-		candidatesByFront.set(frontKey, bucket);
+	const uidsToRecover = [
+		...new Set(
+			statesNeedingRecovery
+				.map((state) => state.finalCard.uid?.trim() ?? "")
+				.filter(Boolean),
+		),
+	];
+
+	if (uidsToRecover.length === 0) {
+		return {
+			blockedCardKeys,
+			recoveredNoteIds: [],
+		};
 	}
 
-	for (const [frontKey, candidates] of candidatesByFront.entries()) {
-		if (!frontKey || candidates.length < 2) {
-			continue;
+	try {
+		const noteIdsByUid = await client.findNotesByObsidianUid(uidsToRecover);
+		const recoveredNoteIds = new Set<string>();
+
+		for (const state of statesNeedingRecovery) {
+			const uid = state.finalCard.uid?.trim() ?? "";
+			if (!uid) {
+				continue;
+			}
+
+			const matches = noteIdsByUid.get(uid) ?? [];
+			if (matches.length === 1) {
+				const [matchedNoteId] = matches;
+				if (matchedNoteId) {
+					state.finalCard = {
+						...state.finalCard,
+						noteId: matchedNoteId,
+					};
+					recoveredNoteIds.add(matchedNoteId);
+				}
+				continue;
+			}
+
+			if (matches.length > 1) {
+				blockedCardKeys.add(getCardLocationKey(state.finalCard));
+				runtimeErrors.push(
+					formatCardError(
+						state.finalCard,
+						`Multiple Anki notes share ObsidianUid "${uid}". Delete the duplicates in Anki and sync again.`,
+					),
+				);
+			}
 		}
 
-		runtimeErrors.push(
-			`Cannot create notes with duplicate Front in the same sync batch: ${formatCardLocations(
-				candidates.map((candidate) => candidate.state.finalCard),
-			)}.`,
-		);
-		for (const candidate of candidates) {
-			blockedCardKeys.add(getCardLocationKey(candidate.state.finalCard));
-		}
+		return {
+			blockedCardKeys,
+			recoveredNoteIds: [...recoveredNoteIds],
+		};
+	} catch (error) {
+		runtimeErrors.push(`Anki UID recovery failed: ${asErrorMessage(error)}`);
+		return {
+			blockedCardKeys,
+			recoveredNoteIds: [],
+		};
 	}
+}
+
+function buildWhyingNoteInput(
+	card: ParsedCard,
+	ankiNoteId: string | null,
+): WhyingAnkiNoteInput {
+	if (!card.uid) {
+		throw new Error(`Missing card UID for ${getCardLocationKey(card)}.`);
+	}
+
+	return {
+		deckName: card.effectiveDeck,
+		tags: card.effectiveTags,
+		fields: {
+			obsidianUid: card.uid,
+			ankiDeck: card.effectiveDeck,
+			ankiTags: card.effectiveTags,
+			ankiNoteId,
+			front: card.frontNormalized,
+			back: card.backNormalized,
+			obsidianUri: card.obUri,
+			obsidianPath: card.filePath,
+			obsidianRev: card.rev,
+		},
+	};
 }
 
 function formatCardLocations(cards: Pick<ParsedCard, "filePath" | "startLine">[]): string {

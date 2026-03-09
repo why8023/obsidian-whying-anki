@@ -1,4 +1,4 @@
-const BASIC_MODEL_NAME = "Basic";
+import { WHYING_ANKI_MODEL_NAME } from "./anki-model";
 
 export function detectPreferredNewline(text: string): "\n" | "\r\n" {
 	return text.includes("\r\n") ? "\r\n" : "\n";
@@ -91,13 +91,17 @@ export async function computeCardRevision(input: {
 	effectiveTags: string[];
 	frontNormalized: string;
 	backNormalized: string;
+	obUri: string;
+	obsidianPath: string;
 }): Promise<string> {
 	const payload = JSON.stringify({
-		model: BASIC_MODEL_NAME,
+		model: WHYING_ANKI_MODEL_NAME,
 		deck: input.effectiveDeck,
 		tags: normalizeTags(input.effectiveTags),
 		front: input.frontNormalized,
 		back: input.backNormalized,
+		obUri: input.obUri,
+		path: input.obsidianPath,
 	});
 
 	const digest = await globalThis.crypto.subtle.digest(

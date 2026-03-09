@@ -10,7 +10,7 @@ import {
 import type { WhyingAnkiSettings } from "./settings";
 import { parseCardsFromMarkdown } from "./syntax";
 import type { FileDefaults, ParsedCard, ScannedFile } from "./types";
-import { appendObsidianLink, buildObsidianFileUri } from "./uri";
+import { buildObsidianFileUri } from "./uri";
 
 export async function scanMarkdownFiles(
 	app: App,
@@ -45,7 +45,7 @@ export async function scanMarkdownFile(
 		);
 
 		const frontNormalized = renderMarkdownMediaForAnki(normalizeCardBody(card.frontRaw));
-		const backNormalizedBase = renderMarkdownMediaForAnki(normalizeCardBody(card.backRaw));
+		const backNormalized = renderMarkdownMediaForAnki(normalizeCardBody(card.backRaw));
 
 		return {
 			...card,
@@ -54,9 +54,7 @@ export async function scanMarkdownFile(
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,
 			frontNormalized,
-			backNormalized: settings.appendObsidianUriToBack
-				? appendObsidianLink(backNormalizedBase, obUri)
-				: backNormalizedBase,
+			backNormalized,
 			effectiveDeck,
 			effectiveTags,
 			obUri,

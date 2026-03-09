@@ -12,14 +12,14 @@ Phase 1 to phase 4 are implemented:
 - Rewrite `card-end` metadata atomically with `Vault.process()`.
 - Persist a local index for future sync and deletion phases.
 - Connect to Anki through AnkiConnect.
-- Validate the `Basic` model before syncing.
+- Auto-create and validate the `Whying Obsidian Basic` model before syncing.
 - Auto-create missing decks before adding notes.
 - Create new notes with `addNote`.
-- Update existing notes with `updateNoteFields`.
+- Update existing notes with the custom field set and `changeDeck`.
 - Delete removed notes through the pending delete queue.
 - Handle file-path reconciliation at startup.
 - Preserve note mappings across file renames.
-- Append an Obsidian source link to the synced Back field.
+- Store the Obsidian source URI in a dedicated note field rendered by the card template.
 - Convert remote Markdown embeds like `![](<https://.../image.png>)` into Anki-ready HTML media tags.
 
 Planned next phases:

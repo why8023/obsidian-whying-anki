@@ -6,7 +6,6 @@ export interface WhyingAnkiSettings {
 	ankiHost: string;
 	ankiPort: number;
 	autoCreateMissingDecks: boolean;
-	appendObsidianUriToBack: boolean;
 	reconcileOnStartup: boolean;
 }
 
@@ -16,7 +15,6 @@ export const DEFAULT_SETTINGS: WhyingAnkiSettings = {
 	ankiHost: "127.0.0.1",
 	ankiPort: 8765,
 	autoCreateMissingDecks: true,
-	appendObsidianUriToBack: true,
 	reconcileOnStartup: true,
 };
 
@@ -39,9 +37,6 @@ export function normalizeSettings(
 		autoCreateMissingDecks:
 			settings?.autoCreateMissingDecks ??
 			DEFAULT_SETTINGS.autoCreateMissingDecks,
-		appendObsidianUriToBack:
-			settings?.appendObsidianUriToBack ??
-			DEFAULT_SETTINGS.appendObsidianUriToBack,
 		reconcileOnStartup:
 			settings?.reconcileOnStartup ?? DEFAULT_SETTINGS.reconcileOnStartup,
 	};
@@ -124,18 +119,6 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.autoCreateMissingDecks)
 					.onChange(async (value) => {
 						this.plugin.settings.autoCreateMissingDecks = value;
-						await this.plugin.savePluginData();
-					}),
-			);
-
-		new Setting(containerEl)
-			.setName("Append Obsidian link")
-			.setDesc("Append a source link to the back field during sync.")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.appendObsidianUriToBack)
-					.onChange(async (value) => {
-						this.plugin.settings.appendObsidianUriToBack = value;
 						await this.plugin.savePluginData();
 					}),
 			);
