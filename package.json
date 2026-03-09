@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-whying-anki",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Obsidian desktop plugin for staged one-way card sync into Anki.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {
@@ -25,5 +25,9 @@
 	},
 	"dependencies": {
 		"obsidian": "latest"
+	},
+	"volta": {
+		"node": "22.20.0",
+		"npm": "10.9.3"
 	}
 }
