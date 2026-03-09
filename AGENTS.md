@@ -249,3 +249,10 @@ this.registerInterval(window.setInterval(() => { /* ... */ }, 1000));
 - Developer policies: https://docs.obsidian.md/Developer+policies
 - Plugin guidelines: https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines
 - Style guide: https://help.obsidian.md/style-guide
+
+## Anki / AnkiConnect reference source
+
+- When working on Anki-related features, do **not** assume the GitHub repository or GitHub releases are the latest source of truth.
+- The AnkiConnect author now publishes the up-to-date project information on the official website: https://foosoft.net/projects/anki-connect/
+- In this workspace, prefer the local reference snapshot under `refer/anki-connect-532a3c816e08e91c4367e2799ce3779403d70274/` first, because it was downloaded from the current official source for this project.
+- Use GitHub only for historical code/issues context when necessary; for current release/docs/API behavior, prefer the local `refer` copy and the official website above.
