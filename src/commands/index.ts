@@ -136,8 +136,8 @@ function reportSyncResult(result: SyncToAnkiResult): void {
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
 	const message =
 		issues === 0
-			? `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsUnchanged} unchanged.`
-			: `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${issues} issue(s).`;
+			? `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${result.cardsUnchanged} unchanged.`
+			: `Synced ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${issues} issue(s).`;
 
 	new Notice(message, 7000);
 }

@@ -123,7 +123,7 @@ export class WhyingAnkiSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Reconcile on startup")
-			.setDesc("Reserved for phase 3 path reconciliation.")
+			.setDesc("Queue deletions for files missing from the vault at startup.")
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.reconcileOnStartup)

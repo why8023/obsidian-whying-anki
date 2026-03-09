@@ -28,8 +28,20 @@ export class IndexStore {
 		return [...this.index.pendingDeleteNoteIds];
 	}
 
+	queuePendingDelete(noteIds: string[]): void {
+		for (const noteId of noteIds) {
+			if (!this.index.pendingDeleteNoteIds.includes(noteId)) {
+				this.index.pendingDeleteNoteIds.push(noteId);
+			}
+		}
+	}
+
 	replace(index: PluginIndex): void {
 		this.index = clonePluginIndex(index);
+	}
+
+	setLastFullReconcileAt(timestamp: number | null): void {
+		this.index.lastFullReconcileAt = timestamp;
 	}
 
 	markDirtyFile(filePath: string): void {
@@ -47,12 +59,11 @@ export class IndexStore {
 	}
 
 	queueFileDelete(filePath: string): void {
-		for (const uid of this.index.uidsByFile[filePath] ?? []) {
-			const record = this.index.cardsByUid[uid];
-			if (record?.ankiNoteId && !this.index.pendingDeleteNoteIds.includes(record.ankiNoteId)) {
-				this.index.pendingDeleteNoteIds.push(record.ankiNoteId);
-			}
-		}
+		this.queuePendingDelete(
+			(this.index.uidsByFile[filePath] ?? [])
+				.map((uid) => this.index.cardsByUid[uid]?.ankiNoteId)
+				.filter((noteId): noteId is string => Boolean(noteId)),
+		);
 	}
 
 	renameFile(oldPath: string, newPath: string): void {
@@ -72,6 +83,43 @@ export class IndexStore {
 		}
 
 		this.markDirtyFile(newPath);
+	}
+
+	removeCardsByNoteIds(noteIds: string[]): void {
+		if (noteIds.length === 0) {
+			return;
+		}
+
+		const noteIdSet = new Set(noteIds);
+		const uidsToRemove = Object.values(this.index.cardsByUid)
+			.filter((record) => record.ankiNoteId && noteIdSet.has(record.ankiNoteId))
+			.map((record) => record.uid);
+
+		this.removeCardsByUids(uidsToRemove);
+		this.index.pendingDeleteNoteIds = this.index.pendingDeleteNoteIds.filter(
+			(noteId) => !noteIdSet.has(noteId),
+		);
+	}
+
+	removeCardsByUids(uids: string[]): void {
+		if (uids.length === 0) {
+			return;
+		}
+
+		const uidSet = new Set(uids);
+
+		for (const uid of uidSet) {
+			delete this.index.cardsByUid[uid];
+		}
+
+		for (const [filePath, fileUids] of Object.entries(this.index.uidsByFile)) {
+			const remainingUids = fileUids.filter((uid) => !uidSet.has(uid));
+			if (remainingUids.length > 0) {
+				this.index.uidsByFile[filePath] = remainingUids;
+			} else {
+				delete this.index.uidsByFile[filePath];
+			}
+		}
 	}
 
 	setFileCards(

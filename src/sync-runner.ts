@@ -28,6 +28,7 @@ interface PreparedCardState {
 interface PreparedScannedFile {
 	scannedFile: ScannedFile;
 	cards: PreparedCardState[];
+	deletedUids: string[];
 }
 
 export async function validateMarkdownFile(
@@ -35,6 +36,37 @@ export async function validateMarkdownFile(
 	file: TFile,
 ): Promise<ScannedFile> {
 	return scanMarkdownFile(plugin.app, file, plugin.settings);
+}
+
+export async function reconcileMissingFiles(
+	plugin: WhyingAnkiPluginApi,
+): Promise<{ missingFilePaths: string[]; removedUnsyncedCards: number }> {
+	const snapshot = plugin.indexStore.getSnapshot();
+	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
+	const missingFilePaths = Object.keys(snapshot.uidsByFile).filter(
+		(filePath) => !currentPaths.has(filePath),
+	);
+	let removedUnsyncedCards = 0;
+
+	for (const filePath of missingFilePaths) {
+		const uids = snapshot.uidsByFile[filePath] ?? [];
+		const syncedNoteIds = uids
+			.map((uid) => snapshot.cardsByUid[uid]?.ankiNoteId)
+			.filter((noteId): noteId is string => Boolean(noteId));
+		const unsyncedUids = uids.filter((uid) => !snapshot.cardsByUid[uid]?.ankiNoteId);
+
+		plugin.indexStore.queuePendingDelete(syncedNoteIds);
+		plugin.indexStore.removeCardsByUids(unsyncedUids);
+		removedUnsyncedCards += unsyncedUids.length;
+	}
+
+	plugin.indexStore.setLastFullReconcileAt(Date.now());
+
+	if (missingFilePaths.length > 0 || removedUnsyncedCards > 0) {
+		await plugin.savePluginData();
+	}
+
+	return { missingFilePaths, removedUnsyncedCards };
 }
 
 export async function refreshLocalMetadataForFiles(
@@ -134,6 +166,8 @@ export async function rebuildSyncIndex(
 export async function syncCardsToAnki(
 	plugin: Plugin & WhyingAnkiPluginApi,
 ): Promise<SyncToAnkiResult> {
+	await reconcileMissingFiles(plugin);
+
 	const files = plugin.app.vault.getMarkdownFiles();
 	const scannedFiles = await scanMarkdownFiles(plugin.app, files, plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
@@ -147,15 +181,54 @@ export async function syncCardsToAnki(
 		return result;
 	}
 
-	for (const scannedFile of scannedFiles) {
+	const preparedFiles = await Promise.all(
+		scannedFiles.map((scannedFile) => prepareScannedFile(scannedFile, indexSnapshot)),
+	);
+
+	const deleteNoteIds = new Set<string>();
+	const orphanDeletedUids = new Set<string>();
+
+	for (const preparedFile of preparedFiles) {
+		const deletedRecords = preparedFile.deletedUids
+			.map((uid) => indexSnapshot.cardsByUid[uid])
+			.filter((record): record is NonNullable<typeof record> => record !== undefined);
+
+		for (const record of deletedRecords) {
+			if (record.ankiNoteId) {
+				deleteNoteIds.add(record.ankiNoteId);
+			} else {
+				orphanDeletedUids.add(record.uid);
+			}
+		}
+	}
+
+	if (orphanDeletedUids.size > 0) {
+		plugin.indexStore.removeCardsByUids([...orphanDeletedUids]);
+	}
+
+	plugin.indexStore.queuePendingDelete([...deleteNoteIds]);
+	const pendingDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
+	let deletePhaseSucceeded = pendingDeleteIds.length === 0;
+
+	if (pendingDeleteIds.length > 0) {
+		try {
+			await client.deleteNotes(pendingDeleteIds);
+			plugin.indexStore.removeCardsByNoteIds(pendingDeleteIds);
+			result.cardsDeleted += pendingDeleteIds.length;
+			deletePhaseSucceeded = true;
+		} catch (error) {
+			result.runtimeErrors.push(asErrorMessage(error));
+		}
+	}
+
+	for (const preparedFile of preparedFiles) {
+		const { scannedFile } = preparedFile;
 		result.filesProcessed += 1;
 		result.cardsProcessed += scannedFile.cards.length;
 		result.parseErrors.push(...scannedFile.errors);
 
-		const prepared = await prepareScannedFile(scannedFile, indexSnapshot);
 		const syncedStates: PreparedCardState[] = [];
-
-		for (const state of prepared.cards) {
+		for (const state of preparedFile.cards) {
 			syncedStates.push(await syncPreparedCard(client, state, result));
 		}
 
@@ -174,7 +247,7 @@ export async function syncCardsToAnki(
 		plugin.indexStore.setFileCards(
 			scannedFile.file.path,
 			syncedStates.map((state) => state.finalCard),
-			{ preserveUnseen: true },
+			{ preserveUnseen: !deletePhaseSucceeded },
 		);
 
 		if (rewritten || rewrites.length === 0) {
@@ -199,6 +272,7 @@ function createLocalResult(): LocalRefreshResult {
 function createSyncResult(): SyncToAnkiResult {
 	return {
 		...createLocalResult(),
+		cardsDeleted: 0,
 		cardsCreated: 0,
 		cardsUpdated: 0,
 		cardsUnchanged: 0,
@@ -236,9 +310,17 @@ async function prepareScannedFile(
 		}),
 	);
 
+	const oldUids = new Set(indexSnapshot.uidsByFile[scannedFile.file.path] ?? []);
+	const newUids = new Set(
+		cards
+			.map((card) => card.finalCard.uid)
+			.filter((uid): uid is string => typeof uid === "string"),
+	);
+
 	return {
 		scannedFile,
 		cards,
+		deletedUids: [...oldUids].filter((uid) => !newUids.has(uid)),
 	};
 }
 

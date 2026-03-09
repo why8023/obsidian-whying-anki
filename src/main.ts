@@ -8,6 +8,7 @@ import {
 	normalizeSettings,
 	type WhyingAnkiSettings,
 } from "./settings";
+import { reconcileMissingFiles } from "./sync-runner";
 import type { StoredPluginData } from "./types";
 
 export default class WhyingAnkiPlugin extends Plugin {
@@ -22,6 +23,10 @@ export default class WhyingAnkiPlugin extends Plugin {
 		this.addSettingTab(new WhyingAnkiSettingTab(this.app, this));
 		registerCommands(this);
 		registerObsidianEventHandlers(this);
+
+		if (this.settings.reconcileOnStartup) {
+			await reconcileMissingFiles(this);
+		}
 	}
 
 	async savePluginData(): Promise<void> {

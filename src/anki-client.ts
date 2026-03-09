@@ -90,6 +90,20 @@ export class AnkiClient {
 		});
 	}
 
+	async deleteNotes(noteIds: string[]): Promise<void> {
+		const numericNoteIds = noteIds
+			.map((noteId) => Number.parseInt(noteId, 10))
+			.filter((noteId) => Number.isInteger(noteId));
+
+		if (numericNoteIds.length !== noteIds.length) {
+			throw new AnkiConnectError("One or more Anki note ids are invalid.");
+		}
+
+		await this.call("deleteNotes", {
+			notes: numericNoteIds,
+		});
+	}
+
 	private async getVersion(): Promise<number> {
 		return this.call<number>("version");
 	}

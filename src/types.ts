@@ -82,16 +82,20 @@ export interface StoredPluginData {
 export interface IndexStoreApi {
 	getSnapshot(): PluginIndex;
 	getPendingDeleteNoteIds(): string[];
+	queuePendingDelete(noteIds: string[]): void;
 	markDirtyFile(filePath: string): void;
 	clearDirtyFile(filePath: string): void;
 	clearDirtyFiles(): void;
 	queueFileDelete(filePath: string): void;
+	removeCardsByNoteIds(noteIds: string[]): void;
+	removeCardsByUids(uids: string[]): void;
 	renameFile(oldPath: string, newPath: string): void;
 	setFileCards(
 		filePath: string,
 		cards: ParsedCard[],
 		options?: { preserveUnseen?: boolean; preserveSyncedRev?: boolean },
 	): void;
+	setLastFullReconcileAt(timestamp: number | null): void;
 	replace(index: PluginIndex): void;
 }
 
@@ -111,6 +115,7 @@ export interface LocalRefreshResult {
 }
 
 export interface SyncToAnkiResult extends LocalRefreshResult {
+	cardsDeleted: number;
 	cardsCreated: number;
 	cardsUpdated: number;
 	cardsUnchanged: number;
