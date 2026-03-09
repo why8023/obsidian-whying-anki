@@ -1,0 +1,84 @@
+const BASIC_MODEL_NAME = "Basic";
+
+export function detectPreferredNewline(text: string): "\n" | "\r\n" {
+	return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+export function normalizeCardBody(text: string): string {
+	return normalizeLineEndings(text).replace(/^\uFEFF/, "").trim();
+}
+
+export function normalizeLineEndings(text: string): string {
+	return text.replace(/\r\n?/g, "\n");
+}
+
+export function normalizeDeck(value: string | null | undefined): string {
+	return value?.trim() ?? "";
+}
+
+export function normalizeTags(values: Iterable<string>): string[] {
+	const seen = new Set<string>();
+	const normalized: string[] = [];
+
+	for (const value of values) {
+		const trimmed = value.trim();
+		if (!trimmed || seen.has(trimmed)) {
+			continue;
+		}
+
+		seen.add(trimmed);
+		normalized.push(trimmed);
+	}
+
+	return normalized.sort((left, right) => left.localeCompare(right));
+}
+
+export function resolveEffectiveDeck(
+	cardDeck: string | null | undefined,
+	fileDeck: string | null | undefined,
+	defaultDeck: string,
+): string {
+	return normalizeDeck(cardDeck) || normalizeDeck(fileDeck) || normalizeDeck(defaultDeck);
+}
+
+export function resolveEffectiveTags(
+	globalTags: Iterable<string>,
+	fileTags: Iterable<string>,
+	cardTags: Iterable<string>,
+): string[] {
+	return normalizeTags([...globalTags, ...fileTags, ...cardTags]);
+}
+
+export function generateCardUid(): string {
+	if (typeof globalThis.crypto?.randomUUID === "function") {
+		return `c_${globalThis.crypto.randomUUID().replace(/-/g, "")}`;
+	}
+
+	return `c_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export async function computeCardRevision(input: {
+	effectiveDeck: string;
+	effectiveTags: string[];
+	frontNormalized: string;
+	backNormalized: string;
+}): Promise<string> {
+	const payload = JSON.stringify({
+		model: BASIC_MODEL_NAME,
+		deck: input.effectiveDeck,
+		tags: normalizeTags(input.effectiveTags),
+		front: input.frontNormalized,
+		back: input.backNormalized,
+	});
+
+	const digest = await globalThis.crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(payload),
+	);
+
+	return `sha256:${toHex(new Uint8Array(digest))}`;
+}
+
+function toHex(bytes: Uint8Array): string {
+	return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
