@@ -17,6 +17,8 @@ import type {
 	ScannedFile,
 	SyncToAnkiResult,
 	ObakPluginApi,
+	SyncExecutionOptions,
+	SyncProgressUpdate,
 } from "./types";
 
 interface CardRewrite {
@@ -235,19 +237,32 @@ export async function rebuildSyncIndex(
 
 export async function syncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
+	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	reportSyncProgress(options, {
+		message: "Reconciling vault changes...",
+		completed: 0,
+		total: null,
+	});
 	await reconcileMissingFiles(plugin);
 	return syncCardsToAnkiForFiles(
 		plugin,
 		plugin.app.vault.getMarkdownFiles(),
 		buildScanConfigSignature(plugin.settings),
 		true,
+		options,
 	);
 }
 
 export async function syncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
+	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	reportSyncProgress(options, {
+		message: "Reconciling vault changes...",
+		completed: 0,
+		total: null,
+	});
 	await reconcileMissingFiles(plugin);
 
 	const selection = selectFilesForIncrementalSync(
@@ -271,6 +286,7 @@ export async function syncChangedCardsToAnki(
 		selection.files,
 		selection.scanConfigSignature,
 		true,
+		options,
 	);
 }
 
@@ -279,7 +295,13 @@ async function syncCardsToAnkiForFiles(
 	files: TFile[],
 	scanConfigSignature: string,
 	advanceSyncCursor = false,
+	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	reportSyncProgress(options, {
+		message: "Scanning markdown files...",
+		completed: 0,
+		total: null,
+	});
 	const indexSnapshot = plugin.indexStore.getSnapshot();
 	const scannedFiles = filterScannedFilesWithUidConflicts(
 		plugin,
@@ -289,13 +311,31 @@ async function syncCardsToAnkiForFiles(
 	const result = createSyncResult();
 	const client = new AnkiClient(plugin.settings);
 	const cleanFilePaths: string[] = [];
+	const totalCardsToSync = scannedFiles.safeScannedFiles.reduce(
+		(count, scannedFile) => count + scannedFile.cards.length,
+		0,
+	);
+	const totalProgressSteps = 5 + totalCardsToSync;
+	let completedProgressSteps = 1;
 
 	for (const message of scannedFiles.conflictMessages) {
 		result.runtimeErrors.push(message);
 	}
 
+	reportSyncProgress(options, {
+		message: `Scanned ${scannedFiles.safeScannedFiles.length} file(s) for sync.`,
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
+
 	try {
 		await client.ensureReadyForSync();
+		completedProgressSteps += 1;
+		reportSyncProgress(options, {
+			message: "Connected to Anki and verified the Obak model.",
+			completed: completedProgressSteps,
+			total: totalProgressSteps,
+		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
 		return result;
@@ -312,11 +352,23 @@ async function syncCardsToAnkiForFiles(
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
 	try {
 		existingNotesById = await client.getNotesInfo(activeNoteIds);
+		completedProgressSteps += 1;
+		reportSyncProgress(options, {
+			message: "Loaded existing note information from Anki.",
+			completed: completedProgressSteps,
+			total: totalProgressSteps,
+		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
 		await plugin.savePluginData();
 		return result;
 	}
+
+	reportSyncProgress(options, {
+		message: "Preparing deck, UID, and duplicate checks...",
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
 
 	try {
 		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
@@ -349,6 +401,12 @@ async function syncCardsToAnkiForFiles(
 		result.runtimeErrors,
 		uidRecoveryResult.blockedCardKeys,
 	);
+	completedProgressSteps += 1;
+	reportSyncProgress(options, {
+		message: "Finished pre-sync validation checks.",
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
 
 	const deleteNoteIds = new Set<string>();
 	const orphanDeletedUids = new Set<string>();
@@ -380,6 +438,11 @@ async function syncCardsToAnkiForFiles(
 	let deletePhaseSucceeded = pendingDeleteIds.length === 0;
 
 	if (pendingDeleteIds.length > 0) {
+		reportSyncProgress(options, {
+			message: `Deleting ${pendingDeleteIds.length} note(s) removed from the vault...`,
+			completed: completedProgressSteps,
+			total: totalProgressSteps,
+		});
 		try {
 			await client.deleteNotes(pendingDeleteIds);
 			plugin.indexStore.removeCardsByNoteIds(pendingDeleteIds);
@@ -390,6 +453,17 @@ async function syncCardsToAnkiForFiles(
 		}
 	}
 
+	completedProgressSteps += 1;
+	reportSyncProgress(options, {
+		message:
+			pendingDeleteIds.length > 0
+				? "Finished processing deleted notes."
+				: "No deleted notes needed processing.",
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
+
+	let processedCards = 0;
 	for (const preparedFile of preparedFiles) {
 		const { scannedFile } = preparedFile;
 		result.filesProcessed += 1;
@@ -409,6 +483,12 @@ async function syncCardsToAnkiForFiles(
 					!blockedCreateCardKeys.has(getCardLocationKey(state.finalCard)),
 				),
 			);
+			processedCards += 1;
+			reportSyncProgress(options, {
+				message: `Syncing card ${processedCards}/${totalCardsToSync}: ${getCardLocationKey(state.finalCard)}`,
+				completed: completedProgressSteps + processedCards,
+				total: totalProgressSteps,
+			});
 		}
 
 		const rewrites = buildCardRewrites(syncedStates);
@@ -447,6 +527,11 @@ async function syncCardsToAnkiForFiles(
 
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
+	reportSyncProgress(options, {
+		message: `Finished syncing ${result.cardsProcessed} card(s).`,
+		completed: totalProgressSteps,
+		total: totalProgressSteps,
+	});
 	return result;
 }
 
@@ -806,6 +891,13 @@ function formatCardError(card: ParsedCard, message: string): string {
 
 function asErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function reportSyncProgress(
+	options: SyncExecutionOptions | undefined,
+	update: SyncProgressUpdate,
+): void {
+	options?.onProgress?.(update);
 }
 
 function formatCreateNoteErrorMessage(error: unknown): string {

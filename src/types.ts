@@ -131,3 +131,13 @@ export interface SyncToAnkiResult extends LocalRefreshResult {
 	cardsUpdated: number;
 	cardsUnchanged: number;
 }
+
+export interface SyncProgressUpdate {
+	message: string;
+	completed: number;
+	total: number | null;
+}
+
+export interface SyncExecutionOptions {
+	onProgress?: (update: SyncProgressUpdate) => void;
+}

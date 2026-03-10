@@ -7,6 +7,7 @@ export interface ObakSettings {
 	ankiPort: number;
 	autoCreateMissingDecks: boolean;
 	reconcileOnStartup: boolean;
+	showDetailedErrorNotices: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObakSettings = {
@@ -16,6 +17,7 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	ankiPort: 8765,
 	autoCreateMissingDecks: true,
 	reconcileOnStartup: true,
+	showDetailedErrorNotices: false,
 };
 
 interface SettingsHost {
@@ -24,11 +26,44 @@ interface SettingsHost {
 }
 
 export function loadSettings(settings?: unknown): ObakSettings {
-	if (!isObakSettings(settings)) {
-		return cloneSettings(DEFAULT_SETTINGS);
+	const normalized = cloneSettings(DEFAULT_SETTINGS);
+	if (!isStringRecord(settings)) {
+		return normalized;
 	}
 
-	return cloneSettings(settings);
+	if (typeof settings.defaultDeck === "string") {
+		normalized.defaultDeck = settings.defaultDeck;
+	}
+
+	if (isStringArray(settings.defaultTags)) {
+		normalized.defaultTags = [...settings.defaultTags];
+	}
+
+	if (typeof settings.ankiHost === "string") {
+		normalized.ankiHost = settings.ankiHost;
+	}
+
+	if (
+		typeof settings.ankiPort === "number" &&
+		Number.isInteger(settings.ankiPort) &&
+		settings.ankiPort > 0
+	) {
+		normalized.ankiPort = settings.ankiPort;
+	}
+
+	if (typeof settings.autoCreateMissingDecks === "boolean") {
+		normalized.autoCreateMissingDecks = settings.autoCreateMissingDecks;
+	}
+
+	if (typeof settings.reconcileOnStartup === "boolean") {
+		normalized.reconcileOnStartup = settings.reconcileOnStartup;
+	}
+
+	if (typeof settings.showDetailedErrorNotices === "boolean") {
+		normalized.showDetailedErrorNotices = settings.showDetailedErrorNotices;
+	}
+
+	return normalized;
 }
 
 export class ObakSettingTab extends PluginSettingTab {
@@ -123,6 +158,20 @@ export class ObakSettingTab extends PluginSettingTab {
 						await this.plugin.savePluginData();
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName("Show detailed error notices")
+			.setDesc(
+				"Show full parse and sync error details in notices instead of summary-only issue counts.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.showDetailedErrorNotices)
+					.onChange(async (value) => {
+						this.plugin.settings.showDetailedErrorNotices = value;
+						await this.plugin.savePluginData();
+					}),
+			);
 	}
 }
 
@@ -148,19 +197,6 @@ function parseCommaSeparated(value: string): string[] {
 	}
 
 	return normalized;
-}
-
-function isObakSettings(value: unknown): value is ObakSettings {
-	return (
-		isStringRecord(value) &&
-		typeof value.defaultDeck === "string" &&
-		isStringArray(value.defaultTags) &&
-		typeof value.ankiHost === "string" &&
-		typeof value.ankiPort === "number" &&
-		Number.isInteger(value.ankiPort) &&
-		typeof value.autoCreateMissingDecks === "boolean" &&
-		typeof value.reconcileOnStartup === "boolean"
-	);
 }
 
 function isStringArray(value: unknown): value is string[] {

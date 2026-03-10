@@ -1,8 +1,61 @@
-/*
+.obak-notice {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.obak-notice__summary {
+	font-weight: 600;
+	line-height: 1.4;
+}
 
-If your plugin does not need CSS, delete this file.
+.obak-notice__details {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	max-height: 180px;
+	overflow: auto;
+	padding-right: 4px;
+	font-size: var(--font-ui-smaller);
+	line-height: 1.45;
+}
 
-*/
+.obak-notice__detail {
+	word-break: break-word;
+	white-space: pre-wrap;
+}
+
+.obak-sync-progress__status,
+.obak-sync-progress__meta {
+	font-size: var(--font-ui-smaller);
+	line-height: 1.4;
+}
+
+.obak-sync-progress__track {
+	position: relative;
+	overflow: hidden;
+	height: 8px;
+	border-radius: 999px;
+	background: var(--background-modifier-border);
+}
+
+.obak-sync-progress__bar {
+	height: 100%;
+	border-radius: inherit;
+	background: var(--interactive-accent);
+	transition: width 140ms ease;
+}
+
+.obak-sync-progress__bar.is-indeterminate {
+	animation: obak-progress-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes obak-progress-indeterminate {
+	0% {
+		transform: translateX(-120%);
+	}
+
+	100% {
+		transform: translateX(320%);
+	}
+}
