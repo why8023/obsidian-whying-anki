@@ -1,4 +1,7 @@
 import MarkdownIt from "markdown-it";
+import markdownItMark from "markdown-it-mark";
+import markdownItTaskLists from "markdown-it-task-lists";
+import markdownMathPlugin from "./markdown-math";
 import { renderMarkdownMediaForAnki } from "./markdown-media";
 
 const MARKDOWN_RENDERER = createMarkdownRenderer();
@@ -22,6 +25,9 @@ function createMarkdownRenderer(): MarkdownIt {
 
 	// Keep local or unsupported embeds as literal text until media sync lands.
 	renderer.disable("image");
+	renderer.use(markdownItMark);
+	renderer.use(markdownItTaskLists);
+	renderer.use(markdownMathPlugin);
 
 	return renderer;
 }
