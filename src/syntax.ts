@@ -137,24 +137,12 @@ export function parseCardsFromMarkdown(
 		const frontRaw = current.frontLines.join("\n");
 		const backRaw = current.backLines.join("\n");
 
-		if (!normalizeCardBody(frontRaw)) {
+		if (!normalizeCardBody(frontRaw) && !normalizeCardBody(backRaw)) {
 			errors.push(
 				createParseError(
 					filePath,
 					current.startLine,
-					"Card front cannot be empty.",
-				),
-			);
-			current = null;
-			continue;
-		}
-
-		if (!normalizeCardBody(backRaw)) {
-			errors.push(
-				createParseError(
-					filePath,
-					current.backLine,
-					"Card back cannot be empty.",
+					"Card front and back cannot both be empty.",
 				),
 			);
 			current = null;
