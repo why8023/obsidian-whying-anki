@@ -46,7 +46,7 @@ export class ObakSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Default deck")
 			.setDesc(
-				"Acts as the root deck. If card and file decks are missing, try Default deck::folder::note first, then Default deck.",
+				"Acts as the root deck. If card and file decks are missing, try default deck::folder::note first, then default deck.",
 			)
 			.addText((text) =>
 				text

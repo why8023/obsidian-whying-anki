@@ -1,5 +1,5 @@
 import type { App, TFile } from "obsidian";
-import { renderMarkdownMediaForAnki } from "./markdown-media";
+import { renderMarkdownForAnki } from "./markdown-renderer";
 import {
 	detectPreferredNewline,
 	normalizeCardBody,
@@ -43,8 +43,8 @@ export async function scanMarkdownFile(
 			card.startMeta.tags,
 		);
 
-		const frontNormalized = renderMarkdownMediaForAnki(normalizeCardBody(card.frontRaw));
-		const backNormalized = renderMarkdownMediaForAnki(normalizeCardBody(card.backRaw));
+		const frontNormalized = renderMarkdownForAnki(normalizeCardBody(card.frontRaw));
+		const backNormalized = renderMarkdownForAnki(normalizeCardBody(card.backRaw));
 
 		return {
 			...card,

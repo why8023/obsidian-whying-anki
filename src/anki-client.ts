@@ -4,9 +4,11 @@ import {
 	OBAK_MODEL_CSS,
 	OBAK_MODEL_FIELDS,
 	OBAK_MODEL_NAME,
+	buildObakTemplateMap,
 	buildObakFields,
 	type ObakModelFieldName,
 	type ObakNoteInput,
+	type ObakStoredCardTemplate,
 } from "./anki-model";
 import type { ObakSettings } from "./settings";
 
@@ -250,6 +252,8 @@ export class AnkiClient {
 				`Anki model "${OBAK_MODEL_NAME}" exists but does not match the expected field schema. Delete the model and sync again.`,
 			);
 		}
+
+		await this.ensureObakModelPresentation();
 	}
 
 	private async createObakModel(): Promise<void> {
@@ -272,6 +276,59 @@ export class AnkiClient {
 
 	private async getModelFieldNames(modelName: string): Promise<string[]> {
 		return this.call<string[]>("modelFieldNames", { modelName });
+	}
+
+	private async getModelTemplates(
+		modelName: string,
+	): Promise<Record<string, ObakStoredCardTemplate>> {
+		return this.call<Record<string, ObakStoredCardTemplate>>("modelTemplates", {
+			modelName,
+		});
+	}
+
+	private async getModelStyling(modelName: string): Promise<string> {
+		const styling = await this.call<{ css?: unknown }>("modelStyling", {
+			modelName,
+		});
+
+		return typeof styling.css === "string" ? styling.css : "";
+	}
+
+	private async updateModelTemplates(
+		modelName: string,
+		templates: Record<string, ObakStoredCardTemplate>,
+	): Promise<void> {
+		await this.call("updateModelTemplates", {
+			model: {
+				name: modelName,
+				templates,
+			},
+		});
+	}
+
+	private async updateModelStyling(modelName: string, css: string): Promise<void> {
+		await this.call("updateModelStyling", {
+			model: {
+				name: modelName,
+				css,
+			},
+		});
+	}
+
+	private async ensureObakModelPresentation(): Promise<void> {
+		const expectedTemplates = buildObakTemplateMap();
+		const [templates, styling] = await Promise.all([
+			this.getModelTemplates(OBAK_MODEL_NAME),
+			this.getModelStyling(OBAK_MODEL_NAME),
+		]);
+
+		if (!sameModelTemplates(templates, expectedTemplates)) {
+			await this.updateModelTemplates(OBAK_MODEL_NAME, expectedTemplates);
+		}
+
+		if (normalizeMarkupText(styling) !== normalizeMarkupText(OBAK_MODEL_CSS)) {
+			await this.updateModelStyling(OBAK_MODEL_NAME, OBAK_MODEL_CSS);
+		}
 	}
 
 	private async call<TResult>(
@@ -411,12 +468,7 @@ function parseAnkiNoteFields(value: unknown): Record<string, string> | null {
 	const fields: Record<string, string> = {};
 
 	for (const [fieldName, fieldValue] of Object.entries(value)) {
-		if (
-			!fieldValue ||
-			typeof fieldValue !== "object" ||
-			!("value" in fieldValue) ||
-			typeof fieldValue.value !== "string"
-		) {
+		if (!isAnkiFieldValue(fieldValue)) {
 			return null;
 		}
 
@@ -424,4 +476,40 @@ function parseAnkiNoteFields(value: unknown): Record<string, string> | null {
 	}
 
 	return fields;
+}
+
+function sameModelTemplates(
+	actual: Record<string, ObakStoredCardTemplate>,
+	expected: Record<string, ObakStoredCardTemplate>,
+): boolean {
+	for (const [name, template] of Object.entries(expected)) {
+		const actualTemplate = actual[name];
+		if (!actualTemplate) {
+			return false;
+		}
+
+		if (
+			normalizeMarkupText(actualTemplate.Front) !==
+				normalizeMarkupText(template.Front) ||
+			normalizeMarkupText(actualTemplate.Back) !==
+				normalizeMarkupText(template.Back)
+		) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function normalizeMarkupText(value: string): string {
+	return value.replace(/\r\n?/g, "\n").trim();
+}
+
+function isAnkiFieldValue(value: unknown): value is { value: string } {
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		"value" in value &&
+		typeof value.value === "string"
+	);
 }
