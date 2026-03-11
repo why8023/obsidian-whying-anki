@@ -85,3 +85,13 @@ Deck priority is:
 - `npm run lint`
 
 The project pins Node and npm with Volta in `package.json`.
+
+## Releases
+
+Push a version tag that exactly matches `package.json` and `manifest.json` to build and publish the plugin assets to GitHub Releases automatically.
+
+- Update the version with `npm version patch`, `npm version minor`, or `npm version major`.
+- Push the commit and tag with `git push origin main --follow-tags`.
+- The release workflow uploads `main.js`, `manifest.json`, and `styles.css`.
+
+If you prefer creating releases in the GitHub UI, publishing a release for an existing version tag runs the same workflow and refreshes the uploaded assets.
