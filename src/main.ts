@@ -12,6 +12,8 @@ import {
 import { reconcileMissingFiles } from "./sync-runner";
 import type { StoredPluginData } from "./types";
 
+const PERIODIC_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
+
 /**
  * 插件主入口。
  * 这里只负责生命周期、状态装载、命令注册和事件绑定，真正的业务逻辑分散在其他模块里。
@@ -73,6 +75,12 @@ export default class ObakPlugin extends Plugin {
 			this.app.workspace.onLayoutReady(() => {
 				void this.runStartupReconcile("layout-ready");
 			});
+
+			this.registerInterval(
+				window.setInterval(() => {
+					void this.runPeriodicReconcile();
+				}, PERIODIC_RECONCILE_INTERVAL_MS),
+			);
 		}
 	}
 
@@ -105,6 +113,34 @@ export default class ObakPlugin extends Plugin {
 			logVerbose(this, "Startup reconcile finished.", result);
 		} finally {
 			this.startupReconcileInFlight = false;
+		}
+	}
+
+	private async runPeriodicReconcile(): Promise<void> {
+		const lastFullReconcileAt = this.indexStore.getSnapshot().lastFullReconcileAt;
+		if (
+			lastFullReconcileAt !== null &&
+			Date.now() - lastFullReconcileAt < PERIODIC_RECONCILE_INTERVAL_MS
+		) {
+			return;
+		}
+
+		const started = await this.runExclusiveSync("periodic reconcile", async () => {
+			logVerbose(this, "Running periodic reconcile for missing files.");
+			const result = await reconcileMissingFiles(this);
+			if (result.deferred) {
+				logVerbose(
+					this,
+					"Deferred periodic reconcile until metadata cache finishes resolving files.",
+				);
+				return;
+			}
+
+			logVerbose(this, "Periodic reconcile finished.", result);
+		});
+
+		if (started === null) {
+			logVerbose(this, "Skipped periodic reconcile because another sync is already running.");
 		}
 	}
 

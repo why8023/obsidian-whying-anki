@@ -1,14 +1,14 @@
 import { Notice, Plugin, TFile } from "obsidian";
 import { logError, logVerbose } from "./logger";
 import { buildNoticeMessage, formatParseError } from "./notices";
-import { syncMarkdownFileToAnki } from "./sync-runner";
+import { syncChangedCardsToAnki } from "./sync-runner";
 import type { LocalRefreshResult, ObakPluginApi, SyncToAnkiResult } from "./types";
 
 const AUTO_SYNC_DELAY_MS = 5000;
 const NOTICE_AUTO_HIDE_MS = 7000;
 const NOTICE_PERSIST_MS = 0;
 
-type AutoSyncReason = "edit-stopped" | "file-left";
+type AutoSyncReason = "edit-stopped" | "file-left" | "vault-change";
 
 interface PendingAutoSync {
 	reason: AutoSyncReason;
@@ -17,7 +17,7 @@ interface PendingAutoSync {
 
 export class AutoSyncController {
 	private activeFilePath: string | null;
-	private readonly pendingByPath = new Map<string, PendingAutoSync>();
+	private pending: PendingAutoSync | null = null;
 
 	constructor(private readonly plugin: Plugin & ObakPluginApi) {
 		this.activeFilePath = getMarkdownFilePath(this.plugin.app.workspace.getActiveFile());
@@ -32,15 +32,11 @@ export class AutoSyncController {
 			return;
 		}
 
-		this.schedule(file.path, "edit-stopped");
+		this.schedule("edit-stopped", file.path);
 	}
 
 	onActiveFileChange(file: TFile | null): void {
 		const nextPath = getMarkdownFilePath(file);
-		if (nextPath) {
-			this.cancel(nextPath, "file became active again");
-		}
-
 		const previousPath = this.activeFilePath;
 		this.activeFilePath = nextPath;
 
@@ -52,20 +48,22 @@ export class AutoSyncController {
 			return;
 		}
 
-		this.schedule(previousPath, "file-left");
+		this.schedule("file-left", previousPath);
 	}
 
 	onMarkdownFileDelete(filePath: string): void {
-		this.cancel(filePath, "file was deleted");
-
 		if (this.activeFilePath === filePath) {
 			this.activeFilePath = null;
 		}
+
+		if (!this.plugin.settings.autoSyncCurrentFile) {
+			return;
+		}
+
+		this.schedule("vault-change", filePath);
 	}
 
 	onMarkdownFileRename(file: TFile, oldPath: string): void {
-		this.cancel(oldPath, "file was renamed");
-
 		if (this.activeFilePath === oldPath) {
 			this.activeFilePath = file.path;
 		}
@@ -74,107 +72,105 @@ export class AutoSyncController {
 			return;
 		}
 
-		if (file.path !== this.activeFilePath) {
-			return;
-		}
-
-		this.schedule(file.path, "edit-stopped");
+		this.schedule("vault-change", file.path);
 	}
 
 	destroy(): void {
-		for (const pending of this.pendingByPath.values()) {
-			window.clearTimeout(pending.timeoutId);
+		if (!this.pending) {
+			return;
 		}
 
-		this.pendingByPath.clear();
+		window.clearTimeout(this.pending.timeoutId);
+		this.pending = null;
 	}
 
-	private schedule(filePath: string, reason: AutoSyncReason): void {
-		this.cancel(filePath);
+	private schedule(reason: AutoSyncReason, sourcePath?: string): void {
+		this.cancel();
 
 		const timeoutId = window.setTimeout(() => {
-			this.pendingByPath.delete(filePath);
-			void this.execute(filePath, reason);
+			this.pending = null;
+			void this.execute(reason, sourcePath);
 		}, AUTO_SYNC_DELAY_MS);
 
-		this.pendingByPath.set(filePath, { reason, timeoutId });
-		logVerbose(this.plugin, `Scheduled auto sync for ${filePath}.`, {
+		this.pending = { reason, timeoutId };
+		logVerbose(this.plugin, "Scheduled auto sync.", {
 			delayMs: AUTO_SYNC_DELAY_MS,
 			reason,
+			sourcePath,
 		});
 	}
 
-	private cancel(filePath: string, detail?: string): void {
-		const pending = this.pendingByPath.get(filePath);
-		if (!pending) {
+	private cancel(): void {
+		if (!this.pending) {
 			return;
 		}
 
-		window.clearTimeout(pending.timeoutId);
-		this.pendingByPath.delete(filePath);
-		logVerbose(this.plugin, `Cancelled pending auto sync for ${filePath}.`, {
-			detail,
-			reason: pending.reason,
-		});
+		window.clearTimeout(this.pending.timeoutId);
+		this.pending = null;
 	}
 
-	private async execute(filePath: string, reason: AutoSyncReason): Promise<void> {
+	private async execute(reason: AutoSyncReason, sourcePath?: string): Promise<void> {
 		if (!this.plugin.settings.autoSyncCurrentFile) {
-			logVerbose(this.plugin, `Skipped auto sync for ${filePath} because it is disabled.`);
+			logVerbose(this.plugin, "Skipped auto sync because it is disabled.");
 			return;
 		}
 
-		if (!this.isFileDirty(filePath)) {
-			logVerbose(this.plugin, `Skipped auto sync for clean file ${filePath}.`);
-			return;
-		}
-
-		const file = this.plugin.app.vault.getFileByPath(filePath);
-		if (!isMarkdownFile(file)) {
-			logVerbose(this.plugin, `Skipped auto sync for missing file ${filePath}.`, {
+		if (!this.hasPendingWork()) {
+			logVerbose(this.plugin, "Skipped auto sync because there is no pending work.", {
 				reason,
+				sourcePath,
 			});
 			return;
 		}
 
-		const started = await this.plugin.runExclusiveSync(
-			`auto sync for ${file.path}`,
-			async () => {
-				logVerbose(this.plugin, `Starting auto sync for ${file.path}.`, { reason });
+		const started = await this.plugin.runExclusiveSync("auto incremental sync", async () => {
+			logVerbose(this.plugin, "Starting auto incremental sync.", {
+				reason,
+				sourcePath,
+			});
 
-				try {
-					const result = await syncMarkdownFileToAnki(this.plugin, file);
-					reportAutoSyncResult(this.plugin, file, result);
-					logVerbose(this.plugin, `Finished auto sync for ${file.path}.`, {
-						reason,
-						result,
-					});
-				} catch (error) {
-					logError(`Auto sync failed for ${file.path}.`, error);
-					new Notice(
-						buildNoticeMessage({
-							label: "Auto sync",
-							title: "Current file auto-sync failed",
-							summary: asErrorMessage(error),
-							tone: "danger",
-						}),
-						NOTICE_PERSIST_MS,
-					);
-				}
-			},
-		);
+			try {
+				const result = await syncChangedCardsToAnki(this.plugin);
+				reportAutoSyncResult(this.plugin, result);
+				logVerbose(this.plugin, "Finished auto incremental sync.", {
+					reason,
+					sourcePath,
+					result,
+				});
+			} catch (error) {
+				logError("Auto incremental sync failed.", error);
+				new Notice(
+					buildNoticeMessage({
+						label: "Auto sync",
+						title: "Auto incremental sync failed",
+						summary: asErrorMessage(error),
+						tone: "danger",
+					}),
+					NOTICE_PERSIST_MS,
+				);
+			}
+		});
 
 		if (started !== null) {
 			return;
 		}
 
-		logVerbose(this.plugin, `Deferred auto sync for ${file.path} because another sync is running.`, {
+		logVerbose(this.plugin, "Deferred auto incremental sync because another sync is running.", {
 			reason,
+			sourcePath,
 		});
 
-		if (this.isFileDirty(file.path)) {
-			this.schedule(file.path, reason);
+		if (this.hasPendingWork()) {
+			this.schedule(reason, sourcePath);
 		}
+	}
+
+	private hasPendingWork(): boolean {
+		return (
+			this.plugin.getDirtyFilePaths().length > 0 ||
+			this.plugin.indexStore.getDeletedFilePaths().length > 0 ||
+			this.plugin.indexStore.getPendingDeleteNoteIds().length > 0
+		);
 	}
 
 	private isFileDirty(filePath: string): boolean {
@@ -184,7 +180,6 @@ export class AutoSyncController {
 
 function reportAutoSyncResult(
 	plugin: ObakPluginApi,
-	file: TFile,
 	result: SyncToAnkiResult,
 ): void {
 	logParseErrors(result.parseErrors);
@@ -196,12 +191,13 @@ function reportAutoSyncResult(
 	new Notice(
 		buildNoticeMessage({
 			label: "Auto sync",
-			title:
-				issues === 0
-					? "Current file auto-synced"
-					: "Current file auto-sync finished with issues",
-			summary: buildAutoSyncSummary(file, result, issues, changeCount),
+			title: issues === 0 ? "Auto sync finished" : "Auto sync finished with issues",
+			summary: buildAutoSyncSummary(result, issues, changeCount),
 			metrics: [
+				{
+					label: "Files",
+					value: String(result.filesProcessed),
+				},
 				{
 					label: "Processed",
 					value: String(result.cardsProcessed),
@@ -235,31 +231,23 @@ function reportAutoSyncResult(
 }
 
 function buildAutoSyncSummary(
-	file: TFile,
 	result: SyncToAnkiResult,
 	issues: number,
 	changeCount: number,
 ): string {
 	if (issues > 0) {
-		return `Auto sync finished for ${file.basename}. Some cards need attention.`;
+		return "Auto sync finished. Some cards need attention.";
 	}
 
-	if (result.cardsProcessed === 0) {
-		return `Auto sync finished for ${file.basename}. No cards were found.`;
+	if (result.filesProcessed === 0 && changeCount === 0) {
+		return "Auto sync found no pending vault changes.";
 	}
 
 	if (changeCount === 0) {
-		return `Auto sync finished for ${file.basename}. No card changes were needed.`;
+		return `Auto sync checked ${result.filesProcessed} file(s). No card changes were needed.`;
 	}
 
-	return `Auto sync finished for ${file.basename}. Applied ${changeCount} change(s).`;
-}
-
-function collectIssueMessages(result: LocalRefreshResult): string[] {
-	return [
-		...result.parseErrors.map(formatParseError),
-		...result.runtimeErrors,
-	];
+	return `Auto sync checked ${result.filesProcessed} file(s) and applied ${changeCount} change(s).`;
 }
 
 function logParseErrors(errors: LocalRefreshResult["parseErrors"]): void {
@@ -272,6 +260,13 @@ function logRuntimeErrors(errors: string[]): void {
 	for (const error of errors) {
 		logError(error);
 	}
+}
+
+function collectIssueMessages(result: LocalRefreshResult): string[] {
+	return [
+		...result.parseErrors.map(formatParseError),
+		...result.runtimeErrors,
+	];
 }
 
 function getMarkdownFilePath(file: TFile | null): string | null {

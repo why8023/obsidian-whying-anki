@@ -267,9 +267,9 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Auto-sync current file")
+			.setName("Auto-sync incremental changes")
 			.setDesc(
-				"Wait 5 seconds after you stop editing or leave the current file, then sync that file to Anki automatically. Auto sync never overlaps an in-flight sync.",
+				"Wait 5 seconds after you stop editing, leave the current file, or change tracked files, then run incremental sync automatically. Auto sync may include other pending vault changes and never overlaps an in-flight sync.",
 			)
 			.addToggle((toggle) =>
 				toggle

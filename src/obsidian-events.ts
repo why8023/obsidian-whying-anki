@@ -1,6 +1,6 @@
 import { Plugin, TFile } from "obsidian";
 import { AutoSyncController } from "./auto-sync-controller";
-import { logVerbose } from "./logger";
+import { logError, logVerbose } from "./logger";
 import type { ObakPluginApi } from "./types";
 
 /**
@@ -60,7 +60,12 @@ export function registerObsidianEventHandlers(
 				}
 
 				if (plugin.indexStore.markFileDeleted(file.path)) {
-					void plugin.savePluginData();
+					void plugin.savePluginData().catch((error) => {
+						logError(
+							`Failed while recording deleted markdown file ${file.path}.`,
+							error,
+						);
+					});
 				}
 
 				autoSyncController.onMarkdownFileDelete(file.path);

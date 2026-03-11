@@ -63,11 +63,11 @@ interface MissingFileReconcileResult {
 	deferred: boolean;
 }
 
-// 处理“已删除文件”队列后的汇总信息。
-interface DeletedFileProcessingResult {
-	changed: boolean;
-	filePaths: string[];
-	removedUnsyncedCards: number;
+// 同步开始前，把文件级 tombstone 拆成“已恢复，需要扫描”和“仍然缺失，需要核实删除”两类。
+interface DeletedFileSyncSelection {
+	files: TFile[];
+	missingFilePaths: string[];
+	restoredFilePaths: string[];
 }
 
 // 待创建新笔记的候选卡片，同时带上它在 Anki 中是否已存在对应 note。
@@ -159,26 +159,20 @@ export async function reconcileMissingFiles(
 		};
 	}
 
-	// 先把缺失路径打上“已删除待处理”标记，再统一走后续删除逻辑。
+	// 审计只负责发现缺失文件并写入 tombstone，不在这里立刻下钻到 note 级删除。
 	for (const filePath of missingFilePaths) {
 		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
 	}
 
-	const deletedResult = processDeletedFiles(plugin, currentPaths);
 	plugin.indexStore.setLastFullReconcileAt(Date.now());
 
-	if (
-		changed ||
-		deletedResult.changed ||
-		deletedResult.filePaths.length > 0 ||
-		deletedResult.removedUnsyncedCards > 0
-	) {
+	if (changed) {
 		await plugin.savePluginData();
 	}
 
 	const result = {
-		missingFilePaths: deletedResult.filePaths,
-		removedUnsyncedCards: deletedResult.removedUnsyncedCards,
+		missingFilePaths,
+		removedUnsyncedCards: 0,
 		deferred: false,
 	};
 	logVerbose(plugin, "Finished reconciling missing files.", result);
@@ -269,6 +263,7 @@ export async function rebuildSyncIndex(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<LocalRefreshResult> {
 	const files = plugin.app.vault.getMarkdownFiles();
+	const currentFilePaths = new Set(files.map((file) => file.path));
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
 	const scannedFiles = await filterScannedFilesWithUidConflicts(
@@ -276,8 +271,7 @@ export async function rebuildSyncIndex(
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
 	);
-	const rebuiltIndex = createEmptyPluginIndex();
-	const rebuiltStore = new IndexStore(rebuiltIndex);
+	const rebuiltStore = new IndexStore(createEmptyPluginIndex());
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
 
@@ -295,10 +289,6 @@ export async function rebuildSyncIndex(
 		});
 		return result;
 	}
-
-	// 待删 note 队列和“最近全量对账时间”属于外部状态，重建时需要保留。
-	rebuiltIndex.pendingDeleteNoteIds = plugin.indexStore.getPendingDeleteNoteIds();
-	rebuiltIndex.lastFullReconcileAt = Date.now();
 
 	for (const scannedFile of scannedFiles.safeScannedFiles) {
 		result.filesProcessed += 1;
@@ -338,11 +328,12 @@ export async function rebuildSyncIndex(
 	rebuiltStore.setLastSyncAt(Date.now());
 	rebuiltStore.setLastScanConfigHash(scanConfigSignature);
 
-	plugin.indexStore.replace({
-		...rebuiltStore.getSnapshot(),
-		pendingDeleteNoteIds: rebuiltIndex.pendingDeleteNoteIds,
-		lastFullReconcileAt: rebuiltIndex.lastFullReconcileAt,
-	});
+	const nextIndex = rebuiltStore.getSnapshot();
+	nextIndex.pendingDeleteNoteIds = plugin.indexStore.getPendingDeleteNoteIds();
+	nextIndex.lastFullReconcileAt = Date.now();
+	mergeDeletedFileTrackingForRebuild(nextIndex, indexSnapshot, currentFilePaths);
+
+	plugin.indexStore.replace(nextIndex);
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
 	logVerbose(plugin, "Finished rebuilding sync index.", result);
@@ -357,24 +348,15 @@ export async function syncCardsToAnki(
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
 	logVerbose(plugin, "Running full sync workflow.");
+	if (shouldDeferSyncUntilVaultReady(plugin)) {
+		return createVaultLoadingDeferredResult(plugin, "full sync");
+	}
+
 	reportSyncProgress(options, {
-		message: "Reconciling vault changes...",
+		message: "Preparing full sync...",
 		completed: 0,
 		total: null,
 	});
-	const reconcileResult = await reconcileMissingFiles(plugin);
-	if (reconcileResult.deferred) {
-		const result = createSyncResult();
-		result.runtimeErrors.push(
-			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
-		);
-		logVerbose(
-			plugin,
-			"Skipped full sync because reconcile was deferred while vault files are still loading.",
-		);
-		return result;
-	}
-
 	return syncCardsToAnkiForFiles(
 		plugin,
 		plugin.app.vault.getMarkdownFiles(),
@@ -397,25 +379,17 @@ export async function syncMarkdownFileToAnki(
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
 	logVerbose(plugin, `Running single-file sync workflow for ${file.path}.`);
+	if (shouldDeferSyncUntilVaultReady(plugin)) {
+		return createVaultLoadingDeferredResult(plugin, "single-file sync", {
+			filePath: file.path,
+		});
+	}
+
 	reportSyncProgress(options, {
-		message: "Reconciling vault changes...",
+		message: "Preparing file sync...",
 		completed: 0,
 		total: null,
 	});
-	const reconcileResult = await reconcileMissingFiles(plugin);
-	if (reconcileResult.deferred) {
-		const result = createSyncResult();
-		result.runtimeErrors.push(
-			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
-		);
-		logVerbose(
-			plugin,
-			"Skipped single-file sync because reconcile was deferred while vault files are still loading.",
-			{ filePath: file.path },
-		);
-		return result;
-	}
-
 	return syncCardsToAnkiForFiles(
 		plugin,
 		[file],
@@ -427,7 +401,7 @@ export async function syncMarkdownFileToAnki(
 
 /**
  * Only sync recently changed files.
- * Falls back to a full scan when pending deletes exist, nothing has been synced yet,
+ * Falls back to a full scan when nothing has been synced yet
  * or scan-affecting settings changed.
  */
 export async function syncChangedCardsToAnki(
@@ -435,24 +409,15 @@ export async function syncChangedCardsToAnki(
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
 	logVerbose(plugin, "Running incremental sync workflow.");
+	if (shouldDeferSyncUntilVaultReady(plugin)) {
+		return createVaultLoadingDeferredResult(plugin, "incremental sync");
+	}
+
 	reportSyncProgress(options, {
-		message: "Reconciling vault changes...",
+		message: "Preparing incremental sync...",
 		completed: 0,
 		total: null,
 	});
-	const reconcileResult = await reconcileMissingFiles(plugin);
-	if (reconcileResult.deferred) {
-		const result = createSyncResult();
-		result.runtimeErrors.push(
-			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
-		);
-		logVerbose(
-			plugin,
-			"Skipped incremental sync because reconcile was deferred while vault files are still loading.",
-		);
-		return result;
-	}
-
 	const selection = selectFilesForIncrementalSync(
 		plugin,
 		plugin.indexStore.getSnapshot(),
@@ -467,7 +432,8 @@ export async function syncChangedCardsToAnki(
 
 	if (
 		selection.files.length === 0 &&
-		plugin.indexStore.getPendingDeleteNoteIds().length === 0
+		plugin.indexStore.getPendingDeleteNoteIds().length === 0 &&
+		plugin.indexStore.getDeletedFilePaths().length === 0
 	) {
 		logVerbose(plugin, "Incremental sync found no pending work.");
 		plugin.indexStore.setLastSyncAt(Date.now());
@@ -492,6 +458,10 @@ async function syncCardsToAnkiForFiles(
 	advanceSyncCursor = false,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	const indexSnapshot = plugin.indexStore.getSnapshot();
+	const deletedFileSelection = resolveDeletedFilesForSync(plugin, files, indexSnapshot);
+	const filesToScan = deletedFileSelection.files;
+
 	// 这是完整同步流程的核心：
 	// 1. 扫描文件
 	// 2. 连接并准备 Anki
@@ -500,19 +470,36 @@ async function syncCardsToAnkiForFiles(
 	// 5. 逐卡创建或更新
 	// 6. 回写文件与索引
 	logVerbose(plugin, "Starting sync for selected files.", {
-		fileCount: files.length,
-		filePaths: files.map((file) => file.path),
+		fileCount: filesToScan.length,
+		filePaths: filesToScan.map((file) => file.path),
 		advanceSyncCursor,
+		missingDeletedFiles: deletedFileSelection.missingFilePaths.length,
+		restoredDeletedFiles: deletedFileSelection.restoredFilePaths,
 	});
 	reportSyncProgress(options, {
 		message: "Scanning markdown files...",
 		completed: 0,
 		total: null,
 	});
-	const indexSnapshot = plugin.indexStore.getSnapshot();
+	const queuedDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
+	if (
+		filesToScan.length === 0 &&
+		queuedDeleteIds.length === 0 &&
+		deletedFileSelection.missingFilePaths.length === 0
+	) {
+		if (advanceSyncCursor) {
+			plugin.indexStore.setLastSyncAt(Date.now());
+			plugin.indexStore.setLastScanConfigHash(scanConfigSignature);
+			await plugin.savePluginData();
+		}
+
+		logVerbose(plugin, "Skipped sync workflow because there was no remaining file or delete work.");
+		return createSyncResult();
+	}
+
 	const scannedFiles = await filterScannedFilesWithUidConflicts(
 		plugin,
-		await scanMarkdownFiles(plugin.app, files, plugin.settings),
+		await scanMarkdownFiles(plugin.app, filesToScan, plugin.settings),
 		indexSnapshot,
 	);
 	const result = createSyncResult();
@@ -622,14 +609,32 @@ async function syncCardsToAnkiForFiles(
 		}
 	}
 
-	// 当前仍然活跃的 note 不应该继续留在待删队列里。
-	plugin.indexStore.dequeuePendingDelete(collectActiveNoteIds(preparedFiles));
+	// 已恢复文件和当前扫描仍然活跃的 note 都不应继续留在待删队列里。
+	const restoredDeletedFileNoteIds = collectTrackedNoteIdsForFilePaths(
+		indexSnapshot,
+		deletedFileSelection.restoredFilePaths,
+	);
+	plugin.indexStore.dequeuePendingDelete([
+		...new Set([...activeNoteIds, ...restoredDeletedFileNoteIds]),
+	]);
 	const activeUids = collectActiveUids(preparedFiles);
+	const deletedFileCandidateUids = collectTrackedUidsForFilePaths(
+		indexSnapshot,
+		deletedFileSelection.missingFilePaths,
+	);
 	const movedDeletedUidPresences = await findUidPresencesInVault(
 		plugin,
-		preparedFiles.flatMap((preparedFile) =>
-			preparedFile.deletedUids.filter((uid) => !activeUids.has(uid)),
-		),
+		[
+			...preparedFiles.flatMap((preparedFile) =>
+				preparedFile.deletedUids.filter((uid) => !activeUids.has(uid)),
+			),
+			...deletedFileCandidateUids.filter((uid) => !activeUids.has(uid)),
+		],
+	);
+	markMovedUidPresenceFilesDirty(
+		plugin,
+		movedDeletedUidPresences,
+		new Set(preparedFiles.map((preparedFile) => preparedFile.scannedFile.file.path)),
 	);
 
 	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
@@ -654,6 +659,7 @@ async function syncCardsToAnkiForFiles(
 	const orphanDeletedUids = new Set<string>();
 	const movedDeletedUids = new Set<string>();
 	const movedDeletedNoteIds = new Set<string>();
+	const missingFileMovedUids = new Set<string>();
 
 	for (const preparedFile of preparedFiles) {
 		if (preparedFile.scannedFile.errors.length > 0) {
@@ -682,9 +688,39 @@ async function syncCardsToAnkiForFiles(
 		}
 	}
 
-	if (orphanDeletedUids.size > 0) {
+	for (const filePath of deletedFileSelection.missingFilePaths) {
+		const deletedRecords = (indexSnapshot.uidsByFile[filePath] ?? [])
+			.map((uid) => indexSnapshot.cardsByUid[uid])
+			.filter((record): record is NonNullable<typeof record> => record !== undefined);
+		if (deletedRecords.length === 0) {
+			plugin.indexStore.clearDeletedFile(filePath);
+			continue;
+		}
+
+		for (const record of deletedRecords) {
+			if (activeUids.has(record.uid) || movedDeletedUidPresences.has(record.uid)) {
+				movedDeletedUids.add(record.uid);
+				missingFileMovedUids.add(record.uid);
+				if (record.ankiNoteId) {
+					movedDeletedNoteIds.add(record.ankiNoteId);
+				}
+				continue;
+			}
+
+			if (record.ankiNoteId) {
+				deleteNoteIds.add(record.ankiNoteId);
+			} else {
+				orphanDeletedUids.add(record.uid);
+			}
+		}
+	}
+
+	if (orphanDeletedUids.size > 0 || missingFileMovedUids.size > 0) {
 		// 从未同步过的卡片只需要本地清理，不需要访问 Anki。
-		plugin.indexStore.removeCardsByUids([...orphanDeletedUids]);
+		plugin.indexStore.removeCardsByUids([
+			...orphanDeletedUids,
+			...missingFileMovedUids,
+		]);
 	}
 
 	if (movedDeletedNoteIds.size > 0) {
@@ -697,6 +733,7 @@ async function syncCardsToAnkiForFiles(
 	logVerbose(plugin, "Prepared note deletions.", {
 		deleteCandidates: deleteNoteIds.size,
 		movedCandidates: movedDeletedUids.size,
+		missingDeletedFiles: deletedFileSelection.missingFilePaths.length,
 		pendingDeletes: pendingDeleteIds.length,
 		orphanDeletedUids: orphanDeletedUids.size,
 	});
@@ -860,6 +897,29 @@ function createSyncResult(): SyncToAnkiResult {
 		cardsUpdated: 0,
 		cardsUnchanged: 0,
 	};
+}
+
+function shouldDeferSyncUntilVaultReady(plugin: ObakPluginApi): boolean {
+	const trackedFiles = Object.keys(plugin.indexStore.getSnapshot().uidsByFile).length;
+	const currentFiles = plugin.app.vault.getMarkdownFiles().length;
+	return trackedFiles > 0 && currentFiles === 0;
+}
+
+function createVaultLoadingDeferredResult(
+	plugin: ObakPluginApi,
+	label: string,
+	details?: Record<string, unknown>,
+): SyncToAnkiResult {
+	const result = createSyncResult();
+	result.runtimeErrors.push(
+		"Vault markdown files are still loading. Sync was skipped to avoid missing files; wait for Obsidian to finish loading and try again.",
+	);
+	logVerbose(plugin, `Skipped ${label} because the vault markdown file list is still empty.`);
+	if (details !== undefined) {
+		logVerbose(plugin, `Skipped ${label} details.`, details);
+	}
+
+	return result;
 }
 
 async function prepareScannedFile(
@@ -1397,47 +1457,114 @@ function buildScanConfigSignature(settings: ObakSettings): string {
 	});
 }
 
-function processDeletedFiles(
+function resolveDeletedFilesForSync(
 	plugin: ObakPluginApi,
-	currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path)),
-): DeletedFileProcessingResult {
-	const snapshot = plugin.indexStore.getSnapshot();
-	let changed = false;
-	const filePaths: string[] = [];
-	let removedUnsyncedCards = 0;
+	files: TFile[],
+	indexSnapshot: PluginIndex,
+): DeletedFileSyncSelection {
+	const selectedFilesByPath = new Map(files.map((file) => [file.path, file]));
+	const vaultFilesByPath = new Map(
+		plugin.app.vault.getMarkdownFiles().map((file) => [file.path, file]),
+	);
+	const missingFilePaths: string[] = [];
+	const restoredFilePaths: string[] = [];
 
-	for (const filePath of snapshot.deletedFilePaths) {
-		if (currentPaths.has(filePath)) {
-			// 如果文件后来又出现了，说明只是临时状态，清掉删除标记即可。
-			plugin.indexStore.clearDeletedFile(filePath);
-			changed = true;
+	for (const filePath of indexSnapshot.deletedFilePaths) {
+		const restoredFile = vaultFilesByPath.get(filePath);
+		if (restoredFile) {
+			restoredFilePaths.push(filePath);
+			selectedFilesByPath.set(filePath, selectedFilesByPath.get(filePath) ?? restoredFile);
 			continue;
 		}
 
-		const uids = snapshot.uidsByFile[filePath] ?? [];
-		if (uids.length === 0) {
-			plugin.indexStore.clearDeletedFile(filePath);
-			changed = true;
-			continue;
-		}
-
-		const syncedNoteIds = uids
-			.map((uid) => snapshot.cardsByUid[uid]?.ankiNoteId)
-			.filter((noteId): noteId is string => Boolean(noteId));
-		const unsyncedUids = uids.filter((uid) => !snapshot.cardsByUid[uid]?.ankiNoteId);
-
-		// 已同步卡片进入待删队列；未同步卡片直接从本地索引回收。
-		plugin.indexStore.queuePendingDelete(syncedNoteIds);
-		plugin.indexStore.removeCardsByUids(unsyncedUids);
-		plugin.indexStore.removeFileTracking(filePath);
-		plugin.indexStore.clearDeletedFile(filePath);
-		plugin.clearFileDirty(filePath);
-		changed = true;
-		filePaths.push(filePath);
-		removedUnsyncedCards += unsyncedUids.length;
+		missingFilePaths.push(filePath);
 	}
 
-	return { changed, filePaths, removedUnsyncedCards };
+	return {
+		files: [...selectedFilesByPath.values()],
+		missingFilePaths,
+		restoredFilePaths,
+	};
+}
+
+function collectTrackedUidsForFilePaths(
+	indexSnapshot: PluginIndex,
+	filePaths: Iterable<string>,
+): string[] {
+	const uids = new Set<string>();
+
+	for (const filePath of filePaths) {
+		for (const uid of indexSnapshot.uidsByFile[filePath] ?? []) {
+			uids.add(uid);
+		}
+	}
+
+	return [...uids];
+}
+
+function collectTrackedNoteIdsForFilePaths(
+	indexSnapshot: PluginIndex,
+	filePaths: Iterable<string>,
+): string[] {
+	const noteIds = new Set<string>();
+
+	for (const filePath of filePaths) {
+		for (const uid of indexSnapshot.uidsByFile[filePath] ?? []) {
+			const noteId = indexSnapshot.cardsByUid[uid]?.ankiNoteId;
+			if (noteId) {
+				noteIds.add(noteId);
+			}
+		}
+	}
+
+	return [...noteIds];
+}
+
+function markMovedUidPresenceFilesDirty(
+	plugin: ObakPluginApi,
+	uidPresences: ReadonlyMap<string, VaultUidPresence[]>,
+	currentFilePaths: ReadonlySet<string>,
+): void {
+	for (const presences of uidPresences.values()) {
+		for (const presence of presences) {
+			if (currentFilePaths.has(presence.filePath)) {
+				continue;
+			}
+
+			plugin.markFileDirty(presence.filePath);
+		}
+	}
+}
+
+function mergeDeletedFileTrackingForRebuild(
+	nextIndex: PluginIndex,
+	previousIndex: PluginIndex,
+	currentFilePaths: ReadonlySet<string>,
+): void {
+	for (const filePath of previousIndex.deletedFilePaths) {
+		if (currentFilePaths.has(filePath)) {
+			continue;
+		}
+
+		const preservedUids = (previousIndex.uidsByFile[filePath] ?? []).filter(
+			(uid) => !nextIndex.cardsByUid[uid],
+		);
+		if (preservedUids.length === 0) {
+			continue;
+		}
+
+		nextIndex.uidsByFile[filePath] = [...preservedUids];
+		nextIndex.deletedFilePaths.push(filePath);
+
+		for (const uid of preservedUids) {
+			const record = previousIndex.cardsByUid[uid];
+			if (!record) {
+				continue;
+			}
+
+			nextIndex.cardsByUid[uid] = { ...record };
+		}
+	}
 }
 
 async function filterScannedFilesWithUidConflicts(
@@ -1811,7 +1938,6 @@ function selectFilesForIncrementalSync(
 	indexSnapshot: PluginIndex,
 ): IncrementalSyncSelection {
 	// 增量同步并不只是看 dirty 标记：
-	// - 若有待删 note，则必须全量扫描
 	// - 若从未同步过，则必须全量扫描
 	// - 若扫描配置变化，则必须全量扫描
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
@@ -1819,9 +1945,7 @@ function selectFilesForIncrementalSync(
 	const allFiles = plugin.app.vault.getMarkdownFiles();
 	const filesByPath = new Map(allFiles.map((file) => [file.path, file]));
 	const staleDirtyPaths = [...dirtyPaths].filter((filePath) => !filesByPath.has(filePath));
-	const hasPendingDeletes = indexSnapshot.pendingDeleteNoteIds.length > 0;
 	const forceFullScan =
-		hasPendingDeletes ||
 		indexSnapshot.lastSyncAt === null ||
 		indexSnapshot.lastScanConfigHash !== scanConfigSignature;
 	const files = forceFullScan
