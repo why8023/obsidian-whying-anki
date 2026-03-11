@@ -1337,7 +1337,9 @@ function selectFilesForIncrementalSync(
 	const allFiles = plugin.app.vault.getMarkdownFiles();
 	const filesByPath = new Map(allFiles.map((file) => [file.path, file]));
 	const staleDirtyPaths = [...dirtyPaths].filter((filePath) => !filesByPath.has(filePath));
+	const hasPendingDeletes = indexSnapshot.pendingDeleteNoteIds.length > 0;
 	const forceFullScan =
+		hasPendingDeletes ||
 		indexSnapshot.lastSyncAt === null ||
 		indexSnapshot.lastScanConfigHash !== scanConfigSignature;
 	const files = forceFullScan

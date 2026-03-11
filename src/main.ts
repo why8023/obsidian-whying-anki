@@ -38,10 +38,16 @@ export default class ObakPlugin extends Plugin {
 		registerObsidianEventHandlers(this);
 
 		if (this.settings.reconcileOnStartup) {
-			logVerbose(this, "Running startup reconcile for missing files.");
-			const result = await reconcileMissingFiles(this);
-			logVerbose(this, "Startup reconcile finished.", result);
+			this.app.workspace.onLayoutReady(() => {
+				void this.runStartupReconcile();
+			});
 		}
+	}
+
+	private async runStartupReconcile(): Promise<void> {
+		logVerbose(this, "Running startup reconcile for missing files.");
+		const result = await reconcileMissingFiles(this);
+		logVerbose(this, "Startup reconcile finished.", result);
 	}
 
 	async savePluginData(): Promise<void> {
