@@ -1,5 +1,6 @@
 import type MarkdownIt from "markdown-it";
 
+// 自定义 token 名称，用于把数学公式插入 markdown-it 的解析结果。
 const BLOCK_MATH_TOKEN = "obak_math_block";
 const DISPLAY_MATH_INLINE_TOKEN = "obak_math_display_inline";
 const INLINE_MATH_TOKEN = "obak_math_inline";
@@ -12,6 +13,7 @@ const DOUBLE_DOLLAR = 2;
 const WHITESPACE_PATTERN = /\s/;
 
 const markdownMathPlugin: MarkdownIt.PluginSimple = (renderer) => {
+	// 在 fence 之前识别块级公式，在 backticks 之后识别行内公式，尽量降低规则冲突。
 	renderer.block.ruler.before("fence", "obak_math_block", parseMathBlock);
 	renderer.inline.ruler.after("backticks", "obak_math_inline", parseMathInline);
 
@@ -51,6 +53,10 @@ function parseMathBlock(
 	endLine: number,
 	silent: boolean,
 ): boolean {
+	// 支持单行 `$$x$$` 和多行包围式：
+	// $$
+	// x
+	// $$
 	const lineStartOffset = state.bMarks[startLine];
 	const lineShift = state.tShift[startLine];
 	const lineEnd = state.eMarks[startLine];
@@ -123,6 +129,7 @@ function parseMathInline(
 	state: MarkdownIt.StateInline,
 	silent: boolean,
 ): boolean {
+	// 行内支持 `$...$` 与 `$$...$$`；单美元会做更严格的误判规避。
 	const start = state.pos;
 	if (state.src.charAt(start) !== DOLLAR_SIGN || isEscaped(state.src, start)) {
 		return false;
@@ -174,6 +181,7 @@ function pushMathBlockToken(
 	startLine: number,
 	endLine: number,
 ): void {
+	// 真正输出 HTML 的工作交给 renderer.rules，这里只负责压入 token。
 	const token = state.push(BLOCK_MATH_TOKEN, "", 0);
 	token.block = true;
 	token.content = content;
@@ -199,6 +207,7 @@ function canOpenMathDelimiter(
 	index: number,
 	delimiterLength: number,
 ): boolean {
+	// 单美元起始条件更严格，避免把金额或普通符号误识别成公式。
 	const nextCharacter = text.charAt(index + delimiterLength);
 	if (!nextCharacter) {
 		return false;
@@ -223,6 +232,7 @@ function findClosingMathDelimiter(
 	startIndex: number,
 	delimiterLength: number,
 ): number {
+	// 单美元闭合时避开空白、连续美元和数字相邻等高误判场景。
 	for (let index = startIndex; index < text.length; index += 1) {
 		if (text.charAt(index) !== DOLLAR_SIGN || isEscaped(text, index)) {
 			continue;
@@ -255,6 +265,7 @@ function findClosingMathDelimiter(
 }
 
 function isEscaped(text: string, index: number): boolean {
+	// 根据前导反斜杠数量判断当前美元符号是否被转义。
 	let slashCount = 0;
 	let cursor = index - 1;
 
@@ -267,6 +278,7 @@ function isEscaped(text: string, index: number): boolean {
 }
 
 function renderInlineMath(content: string): string {
+	// 输出 `\(...\)` / `\[...\]` 包裹格式，交给 Anki 端的数学渲染器处理。
 	return `<span class="obak-inline-math">\\(${escapeHtml(content)}\\)</span>`;
 }
 

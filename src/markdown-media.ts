@@ -1,5 +1,6 @@
 type MediaKind = "audio" | "image" | "video";
 
+// 解析成功后的媒体嵌入信息。
 interface ParsedMediaEmbed {
 	alt: string;
 	endOffset: number;
@@ -38,6 +39,10 @@ const VIDEO_EXTENSIONS = new Set([
 	".webm",
 ]);
 
+/**
+ * 把远程图片/音频/视频形式的 Markdown 嵌入转换成原生 HTML 标签。
+ * 当前只接受 http/https 远程资源；本地附件保持原文不动。
+ */
 export function renderMarkdownMediaForAnki(text: string): string {
 	if (!text.includes("![")) {
 		return text;
@@ -62,6 +67,7 @@ export function renderMarkdownMediaForAnki(text: string): string {
 
 		const mediaKind = detectMediaKind(parsedEmbed.url);
 		if (!mediaKind) {
+			// 不认识的扩展名保持原 Markdown，避免误转换。
 			transformed += text.slice(cursor, parsedEmbed.endOffset);
 			cursor = parsedEmbed.endOffset;
 			continue;
@@ -76,6 +82,7 @@ export function renderMarkdownMediaForAnki(text: string): string {
 }
 
 function parseMediaEmbed(text: string, startOffset: number): ParsedMediaEmbed | null {
+	// 只处理标准 `![alt](url "title")` 结构。
 	if (!text.startsWith("![", startOffset)) {
 		return null;
 	}
@@ -106,6 +113,7 @@ function parseMediaEmbed(text: string, startOffset: number): ParsedMediaEmbed | 
 }
 
 function parseDestination(rawDestination: string): { title: string | null; url: string } | null {
+	// 兼容 `<url>` 与 `url "title"` 两种写法。
 	const trimmed = rawDestination.trim();
 	if (!trimmed) {
 		return null;
@@ -148,6 +156,7 @@ function parseDestination(rawDestination: string): { title: string | null; url: 
 }
 
 function splitDestinationAndTitle(value: string): { remainder: string; url: string } {
+	// 切分 URL 和 title 时，需要忽略 URL 内部嵌套括号。
 	let nestedParens = 0;
 
 	for (let index = 0; index < value.length; index += 1) {
@@ -193,6 +202,7 @@ function findMatchingDelimiter(
 	openDelimiter: string,
 	closeDelimiter: string,
 ): number | null {
+	// 通用括号匹配器，支持嵌套和转义。
 	let depth = 0;
 
 	for (let index = startOffset; index < text.length; index += 1) {
@@ -220,6 +230,7 @@ function findMatchingDelimiter(
 
 function detectMediaKind(url: string): MediaKind | null {
 	try {
+		// 仅根据 URL 后缀推断媒体类型；没有后缀时不做转换。
 		const pathname = new URL(url).pathname.toLowerCase();
 		const extensionStart = pathname.lastIndexOf(".");
 		if (extensionStart === -1) {
@@ -252,6 +263,7 @@ function renderMediaHtml(kind: MediaKind, embed: ParsedMediaEmbed): string {
 		? ` title="${escapeHtmlAttribute(embed.title)}"`
 		: "";
 
+	// 直接输出 HTML，避免依赖 Anki 端再跑一遍 Markdown 解析。
 	if (kind === "image") {
 		return `<img src="${escapedSource}" alt="${escapeHtmlAttribute(embed.alt)}"${titleAttribute} style="max-width: 100%; height: auto;">`;
 	}

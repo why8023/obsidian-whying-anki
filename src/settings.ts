@@ -1,16 +1,30 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 
+/**
+ * 插件设置。
+ * 这些配置既影响扫描行为，也影响同步到 Anki 的运行方式。
+ */
 export interface ObakSettings {
+	// 全局默认牌组；当卡片和文件都没声明 deck 时，插件会优先推导 scoped deck。
 	defaultDeck: string;
+	// 会合并进所有卡片的默认标签。
 	defaultTags: string[];
+	// AnkiConnect 服务地址。
 	ankiHost: string;
 	ankiPort: number;
+	// 是否在同步前自动创建缺失牌组。
 	autoCreateMissingDecks: boolean;
+	// 插件启动时是否自动对账缺失文件。
 	reconcileOnStartup: boolean;
+	// notice 中显示完整错误列表，还是只显示摘要。
 	showDetailedErrorNotices: boolean;
+	// 是否把详细调试信息打印到开发者控制台。
 	enableVerboseLogging: boolean;
 }
 
+/**
+ * 默认设置。
+ */
 export const DEFAULT_SETTINGS: ObakSettings = {
 	defaultDeck: "",
 	defaultTags: [],
@@ -22,11 +36,16 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	enableVerboseLogging: false,
 };
 
+// 设置面板只依赖这一小组能力，避免和完整插件类强耦合。
 interface SettingsHost {
 	settings: ObakSettings;
 	savePluginData(): Promise<void>;
 }
 
+/**
+ * 从持久化数据中加载设置，并对每个字段做安全归一化。
+ * 这样可以兼容旧版本数据、手工编辑损坏的数据，或缺省字段。
+ */
 export function loadSettings(settings?: unknown): ObakSettings {
 	const normalized = cloneSettings(DEFAULT_SETTINGS);
 	if (!isStringRecord(settings)) {
@@ -72,6 +91,10 @@ export function loadSettings(settings?: unknown): ObakSettings {
 	return normalized;
 }
 
+/**
+ * Obsidian 设置页实现。
+ * 这里只负责 UI 和保存行为，不做复杂业务逻辑。
+ */
 export class ObakSettingTab extends PluginSettingTab {
 	plugin: SettingsHost;
 
@@ -84,6 +107,7 @@ export class ObakSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		// 每个设置项改动后立刻持久化，避免需要单独的“保存”按钮。
 		new Setting(containerEl)
 			.setName("Default deck")
 			.setDesc(
@@ -196,6 +220,7 @@ export class ObakSettingTab extends PluginSettingTab {
 }
 
 function cloneSettings(settings: ObakSettings): ObakSettings {
+	// `defaultTags` 是数组，需要复制，避免调用方修改原对象。
 	return {
 		...settings,
 		defaultTags: [...settings.defaultTags],
@@ -203,6 +228,7 @@ function cloneSettings(settings: ObakSettings): ObakSettings {
 }
 
 function parseCommaSeparated(value: string): string[] {
+	// 统一做 trim 和去重，保证配置里标签顺序稳定且没有空项。
 	const seen = new Set<string>();
 	const normalized: string[] = [];
 

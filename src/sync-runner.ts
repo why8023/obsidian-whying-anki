@@ -22,63 +22,77 @@ import type {
 	SyncProgressUpdate,
 } from "./types";
 
+// 一次文件重写操作：把原文某个区间替换成新的 `card-end` 标记。
 interface CardRewrite {
 	startOffset: number;
 	endOffset: number;
 	replacement: string;
 }
 
+// 准备阶段会同时保留“原卡片”和“归一化后准备用于同步的卡片”，便于比较与回写。
 interface PreparedCardState {
 	originalCard: ParsedCard;
 	finalCard: ParsedCard;
 	previousSyncedRev: string | null;
 }
 
+// 单文件在进入同步前的准备结果。
 interface PreparedScannedFile {
 	scannedFile: ScannedFile;
 	cards: PreparedCardState[];
 	deletedUids: string[];
 }
 
+// 进入真正同步阶段前，还会记录文件是否因为补 UID 而被提前重写过。
 interface PreparedSyncFile extends PreparedScannedFile {
 	fileRewritten: boolean;
 }
 
+// 增量同步的文件选择结果。
 interface IncrementalSyncSelection {
 	files: TFile[];
 	scanConfigSignature: string;
 	staleDirtyPaths: string[];
 }
 
+// 启动或同步前对账缺失文件后的结果。
 interface MissingFileReconcileResult {
 	missingFilePaths: string[];
 	removedUnsyncedCards: number;
 	deferred: boolean;
 }
 
+// 处理“已删除文件”队列后的汇总信息。
 interface DeletedFileProcessingResult {
 	changed: boolean;
 	filePaths: string[];
 	removedUnsyncedCards: number;
 }
 
+// 待创建新笔记的候选卡片，同时带上它在 Anki 中是否已存在对应 note。
 interface PendingCreateCandidate {
 	existingNote: AnkiNoteInfo | null;
 	state: PreparedCardState;
 }
 
+// 通过 UID 尝试恢复 noteId 的结果。
 interface UidRecoveryResult {
 	blockedCardKeys: Set<string>;
 	recoveredNoteIds: string[];
 }
 
+// 扫描期间对 UID 冲突做过滤后的结果。
 interface UidConflictFilterResult {
 	conflictMessages: string[];
 	safeScannedFiles: ScannedFile[];
 }
 
+// 只要影响“哪些文件需要重新扫描”的配置发生变化，就要递增这个版本。
 const SCAN_CONFIG_SIGNATURE_VERSION = 2;
 
+/**
+ * 只校验当前文件的卡片语法，不改动文件、不访问 Anki。
+ */
 export async function validateMarkdownFile(
 	plugin: ObakPluginApi,
 	file: TFile,
@@ -86,6 +100,14 @@ export async function validateMarkdownFile(
 	return scanMarkdownFile(plugin.app, file, plugin.settings);
 }
 
+/**
+ * 把索引中记录但 vault 中已经不存在的文件处理掉。
+ *
+ * 职责包括：
+ * 1. 标记缺失文件
+ * 2. 为已同步卡片排队删除对应 Anki 笔记
+ * 3. 直接清理从未同步过的本地卡片索引
+ */
 export async function reconcileMissingFiles(
 	plugin: ObakPluginApi,
 ): Promise<MissingFileReconcileResult> {
@@ -104,6 +126,7 @@ export async function reconcileMissingFiles(
 	});
 
 	if (trackedPaths.length > 0 && currentPaths.size === 0) {
+		// 启动早期 vault 文件列表可能暂时为空；此时若直接对账会误判整库已删除。
 		logVerbose(
 			plugin,
 			"Deferred reconcile because tracked files exist but the vault markdown file list is still empty.",
@@ -119,6 +142,7 @@ export async function reconcileMissingFiles(
 		};
 	}
 
+	// 先把缺失路径打上“已删除待处理”标记，再统一走后续删除逻辑。
 	for (const filePath of missingFilePaths) {
 		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
 	}
@@ -144,6 +168,14 @@ export async function reconcileMissingFiles(
 	return result;
 }
 
+/**
+ * 只刷新本地卡片元数据：
+ * - 补 UID
+ * - 计算 rev
+ * - 继承已知 noteId
+ * - 回写 `card-end`
+ * - 更新本地索引
+ */
 export async function refreshLocalMetadataForFiles(
 	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
@@ -168,6 +200,7 @@ export async function refreshLocalMetadataForFiles(
 	result.runtimeErrors.push(...scannedFiles.conflictMessages);
 
 	for (const scannedFile of scannedFiles.safeScannedFiles) {
+		// 即便某个文件有解析错误，也会统计进去；只是最终行为会受错误影响。
 		result.filesProcessed += 1;
 		result.cardsProcessed += scannedFile.cards.length;
 		result.parseErrors.push(...scannedFile.errors);
@@ -211,6 +244,10 @@ export async function refreshLocalMetadataForFiles(
 	return result;
 }
 
+/**
+ * 全量重建同步索引。
+ * 适合索引损坏、配置变化较大，或需要重新从 vault 现状推导状态时使用。
+ */
 export async function rebuildSyncIndex(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<LocalRefreshResult> {
@@ -242,6 +279,7 @@ export async function rebuildSyncIndex(
 		return result;
 	}
 
+	// 待删 note 队列和“最近全量对账时间”属于外部状态，重建时需要保留。
 	rebuiltIndex.pendingDeleteNoteIds = plugin.indexStore.getPendingDeleteNoteIds();
 	rebuiltIndex.lastFullReconcileAt = Date.now();
 
@@ -294,6 +332,9 @@ export async function rebuildSyncIndex(
 	return result;
 }
 
+/**
+ * 对整库执行完整同步。
+ */
 export async function syncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
@@ -326,6 +367,10 @@ export async function syncCardsToAnki(
 	);
 }
 
+/**
+ * 只同步最近变动过的文件。
+ * 如果存在待删 note、从未同步过，或扫描配置发生变化，则会自动退化为全量扫描。
+ */
 export async function syncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
@@ -388,6 +433,13 @@ async function syncCardsToAnkiForFiles(
 	advanceSyncCursor = false,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	// 这是完整同步流程的核心：
+	// 1. 扫描文件
+	// 2. 连接并准备 Anki
+	// 3. 预处理 UID / noteId / deck / 重复项
+	// 4. 删除失效笔记
+	// 5. 逐卡创建或更新
+	// 6. 回写文件与索引
 	logVerbose(plugin, "Starting sync for selected files.", {
 		fileCount: files.length,
 		filePaths: files.map((file) => file.path),
@@ -431,6 +483,7 @@ async function syncCardsToAnkiForFiles(
 	});
 
 	try {
+		// 只有在确认 AnkiConnect 可用且模型结构正确后，才继续真正同步。
 		await client.ensureReadyForSync();
 		logVerbose(plugin, "Anki client is ready for sync.");
 		completedProgressSteps += 1;
@@ -455,6 +508,7 @@ async function syncCardsToAnkiForFiles(
 
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
 	try {
+		// 预先把所有可能涉及的现有 note 一次性拉下来，减少后续逐卡查询。
 		existingNotesById = await client.getNotesInfo(activeNoteIds);
 		logVerbose(plugin, "Loaded existing Anki notes for active cards.", {
 			activeNoteIds: activeNoteIds.length,
@@ -480,6 +534,7 @@ async function syncCardsToAnkiForFiles(
 	});
 
 	try {
+		// 新卡创建前先确保目标牌组存在；失败时记录错误，但不阻断整个同步流程。
 		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
 		logVerbose(plugin, "Ensured target decks exist for new cards.");
 	} catch (error) {
@@ -495,6 +550,7 @@ async function syncCardsToAnkiForFiles(
 	);
 
 	if (uidRecoveryResult.recoveredNoteIds.length > 0) {
+		// 通过 UID 找回 noteId 后，再补拉一次详情，保证后续更新阶段拿到完整 note 信息。
 		logVerbose(plugin, "Recovered Anki note IDs by Obsidian UID.", {
 			recovered: uidRecoveryResult.recoveredNoteIds.length,
 		});
@@ -507,6 +563,7 @@ async function syncCardsToAnkiForFiles(
 		}
 	}
 
+	// 当前仍然活跃的 note 不应该继续留在待删队列里。
 	plugin.indexStore.dequeuePendingDelete(collectActiveNoteIds(preparedFiles));
 
 	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
@@ -532,6 +589,7 @@ async function syncCardsToAnkiForFiles(
 
 	for (const preparedFile of preparedFiles) {
 		if (preparedFile.scannedFile.errors.length > 0) {
+			// 有解析错误的文件先不参与删除推断，避免局部语法错误导致误删 Anki 笔记。
 			continue;
 		}
 
@@ -549,6 +607,7 @@ async function syncCardsToAnkiForFiles(
 	}
 
 	if (orphanDeletedUids.size > 0) {
+		// 从未同步过的卡片只需要本地清理，不需要访问 Anki。
 		plugin.indexStore.removeCardsByUids([...orphanDeletedUids]);
 	}
 
@@ -600,6 +659,7 @@ async function syncCardsToAnkiForFiles(
 
 		const syncedStates: PreparedCardState[] = [];
 		for (const state of preparedFile.cards) {
+			// 逐卡决定是跳过、创建还是更新，并同步回最新 noteId/rev。
 			syncedStates.push(
 				await syncPreparedCard(
 					plugin,
@@ -643,6 +703,7 @@ async function syncCardsToAnkiForFiles(
 			scannedFile.file.path,
 			syncedStates.map((state) => state.finalCard),
 			{
+				// 删除阶段失败或文件存在解析错误时，不应贸然删除索引里“这次没扫描到”的旧卡。
 				preserveUnseen:
 					!deletePhaseSucceeded || scannedFile.errors.length > 0,
 			},
@@ -672,6 +733,7 @@ async function syncCardsToAnkiForFiles(
 }
 
 function createLocalResult(): LocalRefreshResult {
+	// 统一结果初始化，减少各流程手写重复字段。
 	return {
 		filesProcessed: 0,
 		filesRewritten: 0,
@@ -695,6 +757,7 @@ async function prepareScannedFile(
 	scannedFile: ScannedFile,
 	indexSnapshot: PluginIndex,
 ): Promise<PreparedScannedFile> {
+	// 这一阶段的目标是：为每张卡补出稳定 UID、继承 noteId，并计算最新 rev。
 	const cards = await Promise.all(
 		scannedFile.cards.map(async (originalCard) => {
 			const existingRecord = findCardIndexRecord(indexSnapshot, originalCard.uid);
@@ -717,6 +780,7 @@ async function prepareScannedFile(
 					noteId: resolvedNoteId,
 					rev,
 				},
+				// 优先沿用索引中记录的“上次成功同步 rev”，否则退回文件里现存的 rev。
 				previousSyncedRev:
 					existingRecord?.lastSyncedRev ?? (resolvedNoteId ? originalCard.rev : null),
 			};
@@ -733,6 +797,7 @@ async function prepareScannedFile(
 	return {
 		scannedFile,
 		cards,
+		// 旧索引里有、这次扫描结果里没有的 UID，会在后续进入删除判定。
 		deletedUids: [...oldUids].filter((uid) => !newUids.has(uid)),
 	};
 }
@@ -746,6 +811,7 @@ async function prepareSyncFiles(
 	const preparedFiles: PreparedSyncFile[] = [];
 
 	for (const scannedFile of scannedFiles) {
+		// 新卡如果还没有 UID，会先回写文件，再重新扫描一次，确保后续同步全程使用稳定 UID。
 		const preparedFile = await prepareScannedFile(scannedFile, indexSnapshot);
 		const stabilizedFile = await ensureFileHasStableUids(
 			plugin,
@@ -783,6 +849,7 @@ async function ensureFileHasStableUids(
 		return null;
 	}
 
+	// UID 已经写回文件后，重新扫描一次，后续逻辑全部基于最新文件内容继续。
 	const rescannedFile = await scanMarkdownFile(
 		plugin.app,
 		preparedFile.scannedFile.file,
@@ -804,6 +871,7 @@ function findCardIndexRecord(
 }
 
 function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[] {
+	// 只需要为“最终落地 deck 非空”的卡片准备牌组。
 	return preparedFiles.flatMap((preparedFile) =>
 		preparedFile.cards
 			.map((state) => state.finalCard.effectiveDeck)
@@ -819,6 +887,12 @@ async function syncPreparedCard(
 	result: SyncToAnkiResult,
 	allowCreate: boolean,
 ): Promise<PreparedCardState> {
+	// 单卡同步策略：
+	// - 没 deck：报错并跳过
+	// - 被预检查阻塞：清空 noteId/rev，等待用户修复
+	// - 没有 noteId 或 note 不存在：创建
+	// - rev 未变化：跳过更新
+	// - 其余：更新现有 note
 	const card = state.finalCard;
 
 	if (!card.effectiveDeck) {
@@ -869,6 +943,7 @@ async function syncPreparedCard(
 	}
 
 	if (!card.noteId || existingNote === null) {
+		// 创建时先 addNote，再立刻 update 一次，把 `AnkiNoteId` 字段写成真实值。
 		const createInput = buildObakNoteInput(card, null);
 		try {
 			const noteId = await client.addObakNote(createInput);
@@ -926,12 +1001,14 @@ async function syncPreparedCard(
 	}
 
 	if (state.previousSyncedRev === card.rev) {
+		// 上次成功同步的 rev 和当前 rev 一致，说明 Anki 内容无需更新。
 		result.cardsUnchanged += 1;
 		logVerbose(plugin, `Card unchanged; skipped update for ${getCardLocationKey(card)}.`);
 		return state;
 	}
 
 	try {
+		// 更新字段后再同步 deck，确保卡片内容和目标位置都与当前 Markdown 一致。
 		await client.updateObakNote(
 			card.noteId,
 			buildObakNoteInput(card, card.noteId),
@@ -956,6 +1033,7 @@ async function syncPreparedCard(
 }
 
 function buildUidRewrites(cards: PreparedCardState[]): CardRewrite[] {
+	// 只为“原文件里没有 UID”的卡片生成重写操作。
 	return cards
 		.map((card) => {
 			if (card.originalCard.uid) {
@@ -976,6 +1054,7 @@ function buildUidRewrites(cards: PreparedCardState[]): CardRewrite[] {
 }
 
 function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
+	// 根据最终 UID/noteId/rev 生成新的 `card-end`；没变化就不回写。
 	return cards
 		.map((card) => {
 			const replacement = serializeCardEnd({
@@ -996,6 +1075,7 @@ function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
 }
 
 function collectActiveNoteIds(preparedFiles: PreparedSyncFile[]): string[] {
+	// 汇总所有仍然有效的 noteId，便于批量加载 note 信息或从待删队列中移除。
 	return [
 		...new Set(
 			preparedFiles.flatMap((preparedFile) =>
@@ -1020,6 +1100,7 @@ async function commitFileRewrites(
 	try {
 		await plugin.app.vault.process(scannedFile.file, (current) => {
 			if (current !== scannedFile.text) {
+				// 如果文件已被用户再次修改，放弃本次重写，避免覆盖最新内容。
 				throw new Error(`File changed during rewrite: ${scannedFile.file.path}`);
 			}
 
@@ -1027,6 +1108,7 @@ async function commitFileRewrites(
 			for (const rewrite of [...rewrites].sort(
 				(left, right) => right.startOffset - left.startOffset,
 			)) {
+				// 按偏移从后往前替换，避免前面的替换影响后面的区间位置。
 				rewritten =
 					rewritten.slice(0, rewrite.startOffset) +
 					rewrite.replacement +
@@ -1073,6 +1155,7 @@ function formatCreateNoteErrorMessage(error: unknown): string {
 }
 
 function buildScanConfigSignature(settings: ObakSettings): string {
+	// 只把影响扫描结果的配置纳入签名；配置变化后，增量同步会自动退回全量扫描。
 	return JSON.stringify({
 		version: SCAN_CONFIG_SIGNATURE_VERSION,
 		defaultDeck: settings.defaultDeck.trim(),
@@ -1094,6 +1177,7 @@ function processDeletedFiles(
 
 	for (const filePath of snapshot.deletedFilePaths) {
 		if (currentPaths.has(filePath)) {
+			// 如果文件后来又出现了，说明只是临时状态，清掉删除标记即可。
 			plugin.indexStore.clearDeletedFile(filePath);
 			changed = true;
 			continue;
@@ -1111,6 +1195,7 @@ function processDeletedFiles(
 			.filter((noteId): noteId is string => Boolean(noteId));
 		const unsyncedUids = uids.filter((uid) => !snapshot.cardsByUid[uid]?.ankiNoteId);
 
+		// 已同步卡片进入待删队列；未同步卡片直接从本地索引回收。
 		plugin.indexStore.queuePendingDelete(syncedNoteIds);
 		plugin.indexStore.removeCardsByUids(unsyncedUids);
 		plugin.indexStore.removeFileTracking(filePath);
@@ -1129,6 +1214,7 @@ function filterScannedFilesWithUidConflicts(
 	scannedFiles: ScannedFile[],
 	indexSnapshot: PluginIndex,
 ): UidConflictFilterResult {
+	// 先收集本轮扫描中“每个 UID 被哪些卡片声明”。
 	const claimsByUid = new Map<string, ParsedCard[]>();
 	const scannedFilePaths = new Set(scannedFiles.map((scannedFile) => scannedFile.file.path));
 	const conflictMessages: string[] = [];
@@ -1148,6 +1234,7 @@ function filterScannedFilesWithUidConflicts(
 
 	for (const [uid, claims] of claimsByUid.entries()) {
 		if (claims.length > 1) {
+			// 同一轮扫描内出现多个相同 UID，直接判为冲突。
 			conflictMessages.push(
 				`Duplicate card UID "${uid}" found at ${formatCardLocations(claims)}. Keep each card UID unique across the vault.`,
 			);
@@ -1175,6 +1262,7 @@ function filterScannedFilesWithUidConflicts(
 			continue;
 		}
 
+		// 另一种冲突：当前扫描文件的 UID 与索引里“其他仍存在文件”的 UID 撞车。
 		conflictMessages.push(
 			`Duplicate card UID "${uid}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingRecord.filePath}. Remove the duplicate or move the original card first.`,
 		);
@@ -1207,6 +1295,7 @@ async function buildBlockedCreateCardKeys(
 	runtimeErrors: string[],
 	initialBlockedCardKeys: ReadonlySet<string> = new Set<string>(),
 ): Promise<Set<string>> {
+	// 对潜在新建卡片执行 `canAddNotes` 预检查，提前挡住重复 UID 等错误。
 	const blockedCardKeys = new Set<string>(initialBlockedCardKeys);
 	const createCandidates = collectCreateCandidates(preparedFiles, existingNotesById);
 
@@ -1251,6 +1340,7 @@ function collectCreateCandidates(
 	preparedFiles: PreparedSyncFile[],
 	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
 ): PendingCreateCandidate[] {
+	// 只挑出“没有 noteId”或“noteId 已失效”的卡片，作为创建候选。
 	return preparedFiles.flatMap((preparedFile) =>
 		preparedFile.cards
 			.map((state) => ({
@@ -1269,6 +1359,7 @@ async function recoverPreparedCardsByUid(
 	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
 	runtimeErrors: string[],
 ): Promise<UidRecoveryResult> {
+	// 某些卡片文件里 noteId 丢了，但 UID 还在；这时可以尝试按 UID 把 noteId 找回来。
 	const blockedCardKeys = new Set<string>();
 	const statesNeedingRecovery = preparedFiles.flatMap((preparedFile) =>
 		preparedFile.cards.filter((state) => {
@@ -1304,6 +1395,7 @@ async function recoverPreparedCardsByUid(
 
 			const matches = noteIdsByUid.get(uid) ?? [];
 			if (matches.length === 1) {
+				// 唯一匹配时可自动恢复 noteId，避免重复创建 Anki 笔记。
 				const [matchedNoteId] = matches;
 				if (matchedNoteId) {
 					state.finalCard = {
@@ -1316,6 +1408,7 @@ async function recoverPreparedCardsByUid(
 			}
 
 			if (matches.length > 1) {
+				// 一个 UID 对应多条 Anki 笔记时无法自动决策，只能阻塞并让用户手工清理。
 				blockedCardKeys.add(getCardLocationKey(state.finalCard));
 				runtimeErrors.push(
 					formatCardError(
@@ -1343,6 +1436,7 @@ function buildObakNoteInput(
 	card: ParsedCard,
 	ankiNoteId: string | null,
 ): ObakNoteInput {
+	// 这里统一收口“同步到 Anki 时到底传哪些字段”，方便创建和更新共用。
 	if (!card.uid) {
 		throw new Error(`Missing card UID for ${getCardLocationKey(card)}.`);
 	}
@@ -1378,6 +1472,10 @@ function selectFilesForIncrementalSync(
 	plugin: ObakPluginApi,
 	indexSnapshot: PluginIndex,
 ): IncrementalSyncSelection {
+	// 增量同步并不只是看 dirty 标记：
+	// - 若有待删 note，则必须全量扫描
+	// - 若从未同步过，则必须全量扫描
+	// - 若扫描配置变化，则必须全量扫描
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const dirtyPaths = new Set(plugin.getDirtyFilePaths());
 	const allFiles = plugin.app.vault.getMarkdownFiles();
@@ -1406,6 +1504,7 @@ function shouldIncrementallySyncFile(
 	dirtyPaths: ReadonlySet<string>,
 	lastSyncAt: number | null,
 ): boolean {
+	// dirty 优先；否则再根据文件创建/修改时间与上次同步时间比较。
 	if (dirtyPaths.has(file.path)) {
 		return true;
 	}

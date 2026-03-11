@@ -3,6 +3,10 @@ import type { ParseError, SyncProgressUpdate } from "./types";
 
 const INDETERMINATE_PROGRESS_WIDTH = "35%";
 
+/**
+ * 同步过程中的常驻进度提示。
+ * 使用自定义 DOM 结构而不是纯文本，便于展示状态文案和进度条。
+ */
 export class SyncProgressNotice {
 	private readonly notice: Notice;
 	private readonly titleEl: HTMLDivElement;
@@ -46,6 +50,10 @@ export class SyncProgressNotice {
 		});
 	}
 
+	/**
+	 * 更新进度条和状态文案。
+	 * `total === null` 时表示当前只能展示“不确定进度”的阶段。
+	 */
 	update(progress: SyncProgressUpdate): void {
 		this.statusEl.textContent = progress.message;
 
@@ -67,11 +75,18 @@ export class SyncProgressNotice {
 		this.metaEl.textContent = `${completed}/${progress.total} (${percent}%)`;
 	}
 
+	/**
+	 * 主动关闭 notice。
+	 */
 	hide(): void {
 		this.notice.hide();
 	}
 }
 
+/**
+ * 生成 notice 内容。
+ * 当用户开启详细错误时，返回包含摘要和问题明细的 DOM 片段。
+ */
 export function buildNoticeMessage(
 	summary: string,
 	issues: string[],
@@ -105,6 +120,9 @@ export function buildNoticeMessage(
 	return fragment;
 }
 
+/**
+ * 把结构化解析错误格式化为用户可读的单行文本。
+ */
 export function formatParseError(error: ParseError): string {
 	return `${error.filePath}:${error.line} ${error.message}`;
 }

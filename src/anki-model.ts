@@ -1,5 +1,7 @@
+// 插件在 Anki 中使用的固定模型名。
 export const OBAK_MODEL_NAME = "OBAK Basic";
 
+// 字段顺序必须稳定；Anki 模型一旦创建，字段顺序变化会破坏兼容性。
 export const OBAK_MODEL_FIELDS = [
 	"ObsidianUid",
 	"AnkiDeck",
@@ -15,6 +17,9 @@ export const OBAK_MODEL_FIELDS = [
 export type ObakModelFieldName =
 	(typeof OBAK_MODEL_FIELDS)[number];
 
+/**
+ * 生成 Anki 字段值时所需的原始输入。
+ */
 export interface ObakFieldInput {
 	ankiDeck: string;
 	ankiNoteId: string | null;
@@ -27,12 +32,16 @@ export interface ObakFieldInput {
 	obsidianUri: string;
 }
 
+/**
+ * 创建或更新一条 Obak 笔记时的完整输入。
+ */
 export interface ObakNoteInput {
 	deckName: string;
 	fields: ObakFieldInput;
 	tags: string[];
 }
 
+// 这两个接口分别对应“创建模型时提交的模板结构”和“从 Anki 读取回来的模板结构”。
 export interface ObakCardTemplate {
 	Back: string;
 	Front: string;
@@ -44,6 +53,7 @@ export interface ObakStoredCardTemplate {
 	Front: string;
 }
 
+// 当前只定义一张基础卡片模板；以后如果要支持更多模板，可在这里追加。
 export const OBAK_CARD_TEMPLATES: ObakCardTemplate[] = [
 	{
 		Name: "Card 1",
@@ -62,6 +72,7 @@ export const OBAK_CARD_TEMPLATES: ObakCardTemplate[] = [
 	},
 ];
 
+// 模型 CSS 直接内置在代码中，首次同步即可自动创建或修正 Anki 端样式。
 export const OBAK_MODEL_CSS = [
 	".card {",
 	"\tfont-family: arial;",
@@ -210,6 +221,9 @@ export const OBAK_MODEL_CSS = [
 	"}",
 ].join("\n");
 
+/**
+ * 把插件内部字段映射成 Anki 模型的实际字段名和值。
+ */
 export function buildObakFields(
 	input: ObakFieldInput,
 ): Record<ObakModelFieldName, string> {
@@ -227,9 +241,13 @@ export function buildObakFields(
 }
 
 function formatAnkiTagField(tags: string[]): string {
+	// 模型里保留一份逗号分隔的标签文本，便于在 Anki 内部直接查看。
 	return tags.map((tag) => tag.trim()).filter(Boolean).join(", ");
 }
 
+/**
+ * 构造以模板名为键的映射，便于与 Anki 当前模板进行对比。
+ */
 export function buildObakTemplateMap(): Record<string, ObakStoredCardTemplate> {
 	const templates: Record<string, ObakStoredCardTemplate> = {};
 

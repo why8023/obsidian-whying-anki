@@ -4,6 +4,7 @@ const MARK_TOKEN = "obak_mark_inline";
 const MARK_DELIMITER = "==";
 
 const markdownMarkPlugin: MarkdownIt.PluginSimple = (renderer) => {
+	// 放在数学规则之后，避免和 `$...$` 解析链路互相打断。
 	renderer.inline.ruler.after("obak_math_inline", MARK_TOKEN, parseMarkInline);
 
 	renderer.renderer.rules[MARK_TOKEN] = (tokens, index, _options, env) => {
@@ -22,6 +23,7 @@ function parseMarkInline(
 	state: MarkdownIt.StateInline,
 	silent: boolean,
 ): boolean {
+	// 仅支持单行 `==高亮==`，并要求分隔符未被转义。
 	const start = state.pos;
 	if (!state.src.startsWith(MARK_DELIMITER, start) || isEscaped(state.src, start)) {
 		return false;
@@ -58,6 +60,7 @@ function parseMarkInline(
 }
 
 function findClosingMarkDelimiter(text: string, startIndex: number): number {
+	// 避免把 `===` 这类连续等号的一部分误判为闭合标记。
 	for (let index = startIndex; index < text.length - 1; index += 1) {
 		if (!text.startsWith(MARK_DELIMITER, index) || isEscaped(text, index)) {
 			continue;
