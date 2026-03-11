@@ -80,7 +80,7 @@ function removeCardMarkersFromSelection(editor: Editor): void {
 	const strippedSelection = stripCardMarkers(selection);
 
 	if (selection === strippedSelection) {
-		new Notice("No card markers found in the selected text.");
+		new Notice("No card markers found in the selected text.", 0);
 		return;
 	}
 

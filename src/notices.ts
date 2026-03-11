@@ -3,10 +3,29 @@ import type { ParseError, SyncProgressUpdate } from "./types";
 
 const INDETERMINATE_PROGRESS_WIDTH = "35%";
 
-/**
- * 同步过程中的常驻进度提示。
- * 使用自定义 DOM 结构而不是纯文本，便于展示状态文案和进度条。
- */
+export type NoticeTone = "neutral" | "success" | "warning" | "danger";
+export type NoticeMetricTone =
+	| "neutral"
+	| "positive"
+	| "warning"
+	| "danger";
+
+export interface NoticeMetric {
+	label: string;
+	value: string;
+	tone?: NoticeMetricTone;
+}
+
+export interface NoticeMessageOptions {
+	label?: string;
+	title: string;
+	summary?: string;
+	metrics?: NoticeMetric[];
+	issues?: string[];
+	showDetailedIssues?: boolean;
+	tone?: NoticeTone;
+}
+
 export class SyncProgressNotice {
 	private readonly notice: Notice;
 	private readonly titleEl: HTMLDivElement;
@@ -18,11 +37,16 @@ export class SyncProgressNotice {
 		this.notice = new Notice("", 0);
 		this.notice.messageEl.empty();
 
-		const rootEl = document.createElement("div");
-		rootEl.className = "obak-notice obak-sync-progress";
+		const rootEl = createNoticeRoot("neutral");
+		rootEl.classList.add("obak-sync-progress");
+
+		const labelEl = document.createElement("div");
+		labelEl.className = "obak-notice__label";
+		labelEl.textContent = "Anki sync";
+		rootEl.append(labelEl);
 
 		this.titleEl = document.createElement("div");
-		this.titleEl.className = "obak-notice__summary";
+		this.titleEl.className = "obak-notice__title";
 		this.titleEl.textContent = title;
 		rootEl.append(this.titleEl);
 
@@ -50,10 +74,6 @@ export class SyncProgressNotice {
 		});
 	}
 
-	/**
-	 * 更新进度条和状态文案。
-	 * `total === null` 时表示当前只能展示“不确定进度”的阶段。
-	 */
 	update(progress: SyncProgressUpdate): void {
 		this.statusEl.textContent = progress.message;
 
@@ -63,7 +83,7 @@ export class SyncProgressNotice {
 			this.metaEl.textContent =
 				progress.completed > 0
 					? `${progress.completed} step(s) completed`
-					: "Preparing...";
+					: "Waiting for the scan summary...";
 			return;
 		}
 
@@ -72,57 +92,110 @@ export class SyncProgressNotice {
 
 		this.barEl.classList.remove("is-indeterminate");
 		this.barEl.style.width = `${percent}%`;
-		this.metaEl.textContent = `${completed}/${progress.total} (${percent}%)`;
+		this.metaEl.textContent = `${completed}/${progress.total} cards | ${percent}%`;
 	}
 
-	/**
-	 * 主动关闭 notice。
-	 */
 	hide(): void {
 		this.notice.hide();
 	}
 }
 
-/**
- * 生成 notice 内容。
- * 当用户开启详细错误时，返回包含摘要和问题明细的 DOM 片段。
- */
 export function buildNoticeMessage(
-	summary: string,
-	issues: string[],
-	showDetailedIssues: boolean,
-): string | DocumentFragment {
-	if (!showDetailedIssues || issues.length === 0) {
-		return summary;
-	}
+	options: NoticeMessageOptions,
+): DocumentFragment {
+	const {
+		label,
+		title,
+		summary,
+		metrics = [],
+		issues = [],
+		showDetailedIssues = false,
+		tone = "neutral",
+	} = options;
 
 	const fragment = document.createDocumentFragment();
-	const rootEl = document.createElement("div");
-	rootEl.className = "obak-notice";
+	const rootEl = createNoticeRoot(tone);
 
-	const summaryEl = document.createElement("div");
-	summaryEl.className = "obak-notice__summary";
-	summaryEl.textContent = summary;
-	rootEl.append(summaryEl);
-
-	const detailsEl = document.createElement("div");
-	detailsEl.className = "obak-notice__details";
-
-	for (const issue of issues) {
-		const detailEl = document.createElement("div");
-		detailEl.className = "obak-notice__detail";
-		detailEl.textContent = issue;
-		detailsEl.append(detailEl);
+	if (label) {
+		const labelEl = document.createElement("div");
+		labelEl.className = "obak-notice__label";
+		labelEl.textContent = label;
+		rootEl.append(labelEl);
 	}
 
-	rootEl.append(detailsEl);
+	const titleEl = document.createElement("div");
+	titleEl.className = "obak-notice__title";
+	titleEl.textContent = title;
+	rootEl.append(titleEl);
+
+	if (summary) {
+		const summaryEl = document.createElement("div");
+		summaryEl.className = "obak-notice__summary";
+		summaryEl.textContent = summary;
+		rootEl.append(summaryEl);
+	}
+
+	if (metrics.length > 0) {
+		const metricsEl = document.createElement("div");
+		metricsEl.className = "obak-notice__metrics";
+
+		for (const metric of metrics) {
+			const metricEl = document.createElement("div");
+			metricEl.className = `obak-notice__metric obak-notice__metric--${metric.tone ?? "neutral"}`;
+
+			const valueEl = document.createElement("div");
+			valueEl.className = "obak-notice__metric-value";
+			valueEl.textContent = metric.value;
+			metricEl.append(valueEl);
+
+			const labelEl = document.createElement("div");
+			labelEl.className = "obak-notice__metric-label";
+			labelEl.textContent = metric.label;
+			metricEl.append(labelEl);
+
+			metricsEl.append(metricEl);
+		}
+
+		rootEl.append(metricsEl);
+	}
+
+	if (issues.length > 0) {
+		if (showDetailedIssues) {
+			const detailsTitleEl = document.createElement("div");
+			detailsTitleEl.className = "obak-notice__details-title";
+			detailsTitleEl.textContent = "Issues";
+			rootEl.append(detailsTitleEl);
+
+			const detailsEl = document.createElement("div");
+			detailsEl.className = "obak-notice__details";
+
+			for (const issue of issues) {
+				const detailEl = document.createElement("div");
+				detailEl.className = "obak-notice__detail";
+				detailEl.textContent = issue;
+				detailsEl.append(detailEl);
+			}
+
+			rootEl.append(detailsEl);
+		} else {
+			const hintEl = document.createElement("div");
+			hintEl.className = "obak-notice__hint";
+			hintEl.textContent =
+				"Detailed issues are hidden in notices. Check the console or enable detailed notices in settings.";
+			rootEl.append(hintEl);
+		}
+	}
+
 	fragment.append(rootEl);
 	return fragment;
 }
 
-/**
- * 把结构化解析错误格式化为用户可读的单行文本。
- */
 export function formatParseError(error: ParseError): string {
 	return `${error.filePath}:${error.line} ${error.message}`;
+}
+
+function createNoticeRoot(tone: NoticeTone): HTMLDivElement {
+	const rootEl = document.createElement("div");
+	rootEl.className = `obak-notice obak-notice--${tone}`;
+	return rootEl;
 }

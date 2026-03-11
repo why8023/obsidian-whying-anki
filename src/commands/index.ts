@@ -15,6 +15,9 @@ import type {
 	ObakPluginApi,
 } from "../types";
 
+const NOTICE_AUTO_HIDE_MS = 7000;
+const NOTICE_PERSIST_MS = 0;
+
 /**
  * 注册所有面向用户的命令。
  * 命令层只负责触发具体流程、展示 notice 和记录日志，不承载同步算法本身。
@@ -97,13 +100,33 @@ async function runValidateCurrentFile(
 	});
 	new Notice(
 		buildNoticeMessage(
-			issueCount === 0
-				? `Validated ${scannedFile.cards.length} card(s) with no syntax errors.`
-				: `Validated ${scannedFile.cards.length} card(s); found ${issueCount} syntax issue(s).`,
-			scannedFile.errors.map(formatParseError),
-			plugin.settings.showDetailedErrorNotices,
+			{
+				label: "Validation",
+				title:
+					issueCount === 0
+						? "Current file validated"
+						: "Validation finished with issues",
+				summary:
+					issueCount === 0
+						? "No syntax errors were found in the current file."
+						: "Fix the reported syntax errors before syncing this file.",
+				metrics: [
+					{
+						label: "Cards",
+						value: String(scannedFile.cards.length),
+					},
+					{
+						label: "Issues",
+						value: String(issueCount),
+						tone: issueCount === 0 ? "positive" : "warning",
+					},
+				],
+				issues: scannedFile.errors.map(formatParseError),
+				showDetailedIssues: plugin.settings.showDetailedErrorNotices,
+				tone: issueCount === 0 ? "success" : "warning",
+			},
 		),
-		7000,
+		getNoticeDuration(issueCount > 0),
 	);
 }
 
@@ -115,7 +138,13 @@ async function runRefreshCurrentFile(
 	logVerbose(plugin, `Refreshing local metadata for ${file.path}.`);
 	const result = await refreshLocalMetadataForFiles(plugin, [file]);
 	reportResult(
-		"Updated current file metadata",
+		{
+			label: "Metadata refresh",
+			successTitle: "Current file metadata refreshed",
+			issueTitle: "Metadata refresh finished with issues",
+			successSummary: "Card metadata markers in the current file are up to date.",
+			issueSummary: "Some metadata could not be refreshed cleanly.",
+		},
 		result,
 		plugin.settings.showDetailedErrorNotices,
 	);
@@ -129,7 +158,13 @@ async function runRebuildSyncIndex(
 	logVerbose(plugin, "Rebuilding sync index.");
 	const result = await rebuildSyncIndex(plugin);
 	reportResult(
-		"Rebuilt sync index",
+		{
+			label: "Sync index",
+			successTitle: "Sync index rebuilt",
+			issueTitle: "Sync index rebuild finished with issues",
+			successSummary: "The local sync index has been rebuilt from vault data.",
+			issueSummary: "Some files could not be fully indexed.",
+		},
 		result,
 		plugin.settings.showDetailedErrorNotices,
 	);
@@ -147,10 +182,18 @@ async function runSyncCardsToAnki(
 		const result = await syncCardsToAnki(plugin, {
 			onProgress: (progress) => progressNotice.update(progress),
 		});
-		reportSyncResult(plugin, result, "Synced");
+		reportSyncResult(plugin, result, "Full sync");
 	} catch (error) {
 		logError("Full sync failed.", error);
-		new Notice(`Sync failed: ${asErrorMessage(error)}`, 7000);
+		new Notice(
+			buildNoticeMessage({
+				label: "Anki sync",
+				title: "Full sync failed",
+				summary: asErrorMessage(error),
+				tone: "danger",
+			}),
+			NOTICE_PERSIST_MS,
+		);
 	} finally {
 		progressNotice.hide();
 	}
@@ -170,14 +213,30 @@ async function runSyncChangedCardsToAnki(
 		reportSyncResult(plugin, result, "Incremental sync");
 	} catch (error) {
 		logError("Incremental sync failed.", error);
-		new Notice(`Incremental sync failed: ${asErrorMessage(error)}`, 7000);
+		new Notice(
+			buildNoticeMessage({
+				label: "Anki sync",
+				title: "Incremental sync failed",
+				summary: asErrorMessage(error),
+				tone: "danger",
+			}),
+			NOTICE_PERSIST_MS,
+		);
 	} finally {
 		progressNotice.hide();
 	}
 }
 
+interface ResultNoticeConfig {
+	label: string;
+	successTitle: string;
+	issueTitle: string;
+	successSummary: string;
+	issueSummary: string;
+}
+
 function reportResult(
-	prefix: string,
+	config: ResultNoticeConfig,
 	result: LocalRefreshResult,
 	showDetailedErrors = false,
 ): void {
@@ -186,41 +245,95 @@ function reportResult(
 	logRuntimeErrors(result.runtimeErrors);
 
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
-	const message =
-		issues === 0
-			? `${prefix}: ${result.cardsProcessed} card(s), ${result.filesRewritten} file rewrite(s).`
-			: `${prefix}: ${result.cardsProcessed} card(s), ${issues} issue(s), ${result.filesRewritten} file rewrite(s).`;
 
 	new Notice(
-		buildNoticeMessage(message, collectIssueMessages(result), showDetailedErrors),
-		7000,
+		buildNoticeMessage({
+			label: config.label,
+			title: issues === 0 ? config.successTitle : config.issueTitle,
+			summary: issues === 0 ? config.successSummary : config.issueSummary,
+			metrics: [
+				{
+					label: "Files",
+					value: String(result.filesProcessed),
+				},
+				{
+					label: "Cards",
+					value: String(result.cardsProcessed),
+				},
+				{
+					label: "Rewritten",
+					value: String(result.filesRewritten),
+					tone: result.filesRewritten > 0 ? "positive" : "neutral",
+				},
+				{
+					label: "Issues",
+					value: String(issues),
+					tone: issues === 0 ? "positive" : "warning",
+				},
+			],
+			issues: collectIssueMessages(result),
+			showDetailedIssues: showDetailedErrors,
+			tone: issues === 0 ? "success" : "warning",
+		}),
+		getNoticeDuration(issues > 0),
 	);
 }
 
 function reportSyncResult(
 	plugin: Plugin & ObakPluginApi,
 	result: SyncToAnkiResult,
-	prefix: string,
+	label: string,
 ): void {
 	// 同步结果会额外展示创建、更新、删除、未变化的卡片统计。
 	logParseErrors(result.parseErrors);
 	logRuntimeErrors(result.runtimeErrors);
 
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
-	const message =
-		issues === 0
-			? `${prefix} ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${result.cardsUnchanged} unchanged.`
-			: `${prefix} ${result.cardsProcessed} card(s): ${result.cardsCreated} created, ${result.cardsUpdated} updated, ${result.cardsDeleted} deleted, ${issues} issue(s).`;
 
 	new Notice(
-		buildNoticeMessage(
-			message,
-			collectIssueMessages(result),
-			plugin.settings.showDetailedErrorNotices,
-		),
-		7000,
+		buildNoticeMessage({
+			label: "Anki sync",
+			title: issues === 0 ? `${label} complete` : `${label} finished with issues`,
+			summary:
+				issues === 0
+					? "Anki changes were applied successfully."
+					: "Some cards could not be synced cleanly.",
+			metrics: [
+				{
+					label: "Processed",
+					value: String(result.cardsProcessed),
+				},
+				{
+					label: "Created",
+					value: String(result.cardsCreated),
+					tone: result.cardsCreated > 0 ? "positive" : "neutral",
+				},
+				{
+					label: "Updated",
+					value: String(result.cardsUpdated),
+					tone: result.cardsUpdated > 0 ? "positive" : "neutral",
+				},
+				{
+					label: "Deleted",
+					value: String(result.cardsDeleted),
+				},
+				{
+					label: "Unchanged",
+					value: String(result.cardsUnchanged),
+				},
+				{
+					label: "Issues",
+					value: String(issues),
+					tone: issues === 0 ? "positive" : "warning",
+				},
+			],
+			issues: collectIssueMessages(result),
+			showDetailedIssues: plugin.settings.showDetailedErrorNotices,
+			tone: issues === 0 ? "success" : "warning",
+		}),
+		getNoticeDuration(issues > 0),
 	);
-	logVerbose(plugin, `${prefix} summary.`, result);
+	logVerbose(plugin, `${label} summary.`, result);
 }
 
 function logParseErrors(errors: LocalRefreshResult["parseErrors"]): void {
@@ -250,4 +363,8 @@ function getActiveMarkdownFile(plugin: ObakPluginApi): TFile | null {
 
 function asErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function getNoticeDuration(hasIssues: boolean): number {
+	return hasIssues ? NOTICE_PERSIST_MS : NOTICE_AUTO_HIDE_MS;
 }
