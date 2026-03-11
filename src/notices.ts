@@ -28,7 +28,6 @@ export interface NoticeMessageOptions {
 
 export class SyncProgressNotice {
 	private readonly notice: Notice;
-	private readonly titleEl: HTMLDivElement;
 	private readonly statusEl: HTMLDivElement;
 	private readonly metaEl: HTMLDivElement;
 	private readonly barEl: HTMLDivElement;
@@ -40,15 +39,24 @@ export class SyncProgressNotice {
 		const rootEl = createNoticeRoot("neutral");
 		rootEl.classList.add("obak-sync-progress");
 
+		const headerEl = document.createElement("div");
+		headerEl.className = "obak-notice__header obak-sync-progress__header";
+
 		const labelEl = document.createElement("div");
 		labelEl.className = "obak-notice__label";
 		labelEl.textContent = "Anki sync";
-		rootEl.append(labelEl);
+		headerEl.append(labelEl);
 
-		this.titleEl = document.createElement("div");
-		this.titleEl.className = "obak-notice__title";
-		this.titleEl.textContent = title;
-		rootEl.append(this.titleEl);
+		const titleEl = document.createElement("div");
+		titleEl.className = "obak-notice__title";
+		titleEl.textContent = title;
+		headerEl.append(titleEl);
+
+		this.metaEl = document.createElement("div");
+		this.metaEl.className = "obak-sync-progress__meta";
+		headerEl.append(this.metaEl);
+
+		rootEl.append(headerEl);
 
 		this.statusEl = document.createElement("div");
 		this.statusEl.className = "obak-sync-progress__status";
@@ -61,10 +69,6 @@ export class SyncProgressNotice {
 		this.barEl.className = "obak-sync-progress__bar";
 		trackEl.append(this.barEl);
 		rootEl.append(trackEl);
-
-		this.metaEl = document.createElement("div");
-		this.metaEl.className = "obak-sync-progress__meta";
-		rootEl.append(this.metaEl);
 
 		this.notice.messageEl.append(rootEl);
 		this.update({
@@ -116,17 +120,21 @@ export function buildNoticeMessage(
 	const fragment = document.createDocumentFragment();
 	const rootEl = createNoticeRoot(tone);
 
+	const headerEl = document.createElement("div");
+	headerEl.className = "obak-notice__header";
+
 	if (label) {
 		const labelEl = document.createElement("div");
 		labelEl.className = "obak-notice__label";
 		labelEl.textContent = label;
-		rootEl.append(labelEl);
+		headerEl.append(labelEl);
 	}
 
 	const titleEl = document.createElement("div");
 	titleEl.className = "obak-notice__title";
 	titleEl.textContent = title;
-	rootEl.append(titleEl);
+	headerEl.append(titleEl);
+	rootEl.append(headerEl);
 
 	if (summary) {
 		const summaryEl = document.createElement("div");
@@ -140,18 +148,18 @@ export function buildNoticeMessage(
 		metricsEl.className = "obak-notice__metrics";
 
 		for (const metric of metrics) {
-			const metricEl = document.createElement("div");
+			const metricEl = document.createElement("span");
 			metricEl.className = `obak-notice__metric obak-notice__metric--${metric.tone ?? "neutral"}`;
 
-			const valueEl = document.createElement("div");
-			valueEl.className = "obak-notice__metric-value";
-			valueEl.textContent = metric.value;
-			metricEl.append(valueEl);
-
-			const labelEl = document.createElement("div");
+			const labelEl = document.createElement("span");
 			labelEl.className = "obak-notice__metric-label";
 			labelEl.textContent = metric.label;
 			metricEl.append(labelEl);
+
+			const valueEl = document.createElement("span");
+			valueEl.className = "obak-notice__metric-value";
+			valueEl.textContent = metric.value;
+			metricEl.append(valueEl);
 
 			metricsEl.append(metricEl);
 		}
@@ -163,7 +171,7 @@ export function buildNoticeMessage(
 		if (showDetailedIssues) {
 			const detailsTitleEl = document.createElement("div");
 			detailsTitleEl.className = "obak-notice__details-title";
-			detailsTitleEl.textContent = "Issues";
+			detailsTitleEl.textContent = `${issues.length} issue(s)`;
 			rootEl.append(detailsTitleEl);
 
 			const detailsEl = document.createElement("div");
