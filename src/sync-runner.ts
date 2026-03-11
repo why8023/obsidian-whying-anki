@@ -1,3 +1,4 @@
+import { basename, dirname, extname, join } from "path";
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
 import {
@@ -620,6 +621,34 @@ async function syncCardsToAnkiForFiles(
 		orphanDeletedUids: orphanDeletedUids.size,
 	});
 
+	if (shouldBackupBeforeBulkDelete(plugin.settings, pendingDeleteIds.length)) {
+		try {
+			const backupExportConfig = getBulkDeleteBackupExportConfig(plugin.settings);
+			reportSyncProgress(options, {
+				message: `Exporting deck "${backupExportConfig.deckName}" before deleting ${pendingDeleteIds.length} note(s)...`,
+				completed: completedProgressSteps,
+				total: totalProgressSteps,
+			});
+			await client.exportPackage(
+				backupExportConfig.deckName,
+				backupExportConfig.exportPath,
+				true,
+			);
+			logVerbose(plugin, "Exported deck before bulk delete.", {
+				deckName: backupExportConfig.deckName,
+				exportPath: backupExportConfig.exportPath,
+				pendingDeletes: pendingDeleteIds.length,
+				threshold: plugin.settings.backupBeforeBulkDeleteThreshold,
+			});
+		} catch (error) {
+			const message = `Aborted sync before deleting ${pendingDeleteIds.length} note(s): ${asErrorMessage(error)}`;
+			result.runtimeErrors.push(message);
+			logVerbose(plugin, "Failed while preparing or exporting deck before bulk delete.", error);
+			await plugin.savePluginData();
+			return result;
+		}
+	}
+
 	if (pendingDeleteIds.length > 0) {
 		reportSyncProgress(options, {
 			message: `Deleting ${pendingDeleteIds.length} note(s) removed from the vault...`,
@@ -1152,6 +1181,93 @@ function formatCreateNoteErrorMessage(error: unknown): string {
 	}
 
 	return message;
+}
+
+function shouldBackupBeforeBulkDelete(
+	settings: Pick<
+		ObakSettings,
+		"backupBeforeBulkDeleteEnabled" | "backupBeforeBulkDeleteThreshold"
+	>,
+	pendingDeleteCount: number,
+): boolean {
+	return (
+		settings.backupBeforeBulkDeleteEnabled &&
+		pendingDeleteCount > settings.backupBeforeBulkDeleteThreshold
+	);
+}
+
+function getBulkDeleteBackupExportConfig(
+	settings: Pick<
+		ObakSettings,
+		"defaultDeck" | "backupBeforeBulkDeleteExportPath"
+	>,
+): {
+	deckName: string;
+	exportPath: string;
+} {
+	const deckName = settings.defaultDeck.trim();
+	if (!deckName) {
+		throw new Error(
+			'Default deck is empty. Set "Default deck" to the deck that contains your Obsidian cards before enabling bulk delete backup.',
+		);
+	}
+
+	const exportPath = settings.backupBeforeBulkDeleteExportPath.trim();
+	if (!exportPath) {
+		throw new Error('Bulk delete backup export path is empty.');
+	}
+
+	return {
+		deckName,
+		exportPath: buildBulkDeleteBackupExportPath(exportPath, deckName),
+	};
+}
+
+function buildBulkDeleteBackupExportPath(
+	configuredPath: string,
+	deckName: string,
+): string {
+	const timestamp = formatBackupTimestamp(new Date());
+
+	if (/\.apkg$/i.test(configuredPath)) {
+		const extension = extname(configuredPath) || ".apkg";
+		const baseName = basename(configuredPath, extension);
+		const parentDirectory = dirname(configuredPath);
+		return join(
+			parentDirectory,
+			`${sanitizeBackupFileName(baseName)}-${timestamp}.apkg`,
+		);
+	}
+
+	return join(
+		configuredPath,
+		`${sanitizeBackupFileName(deckName)}-${timestamp}.apkg`,
+	);
+}
+
+function formatBackupTimestamp(date: Date): string {
+	return [
+		date.getFullYear(),
+		padTimestampPart(date.getMonth() + 1),
+		padTimestampPart(date.getDate()),
+		padTimestampPart(date.getHours()),
+		padTimestampPart(date.getMinutes()),
+		padTimestampPart(date.getSeconds()),
+	].join("");
+}
+
+function padTimestampPart(value: number): string {
+	return String(value).padStart(2, "0");
+}
+
+function sanitizeBackupFileName(value: string): string {
+	const sanitized = value
+		.trim()
+		.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+		.replace(/\s+/g, "-")
+		.replace(/[. ]+$/g, "");
+
+	return sanitized || "obak-backup";
 }
 
 function buildScanConfigSignature(settings: ObakSettings): string {

@@ -14,6 +14,9 @@ export interface ObakSettings {
 	ankiPort: number;
 	// 是否在同步前自动创建缺失牌组。
 	autoCreateMissingDecks: boolean;
+	backupBeforeBulkDeleteEnabled: boolean;
+	backupBeforeBulkDeleteExportPath: string;
+	backupBeforeBulkDeleteThreshold: number;
 	// 插件启动时是否自动对账缺失文件。
 	reconcileOnStartup: boolean;
 	// notice 中显示完整错误列表，还是只显示摘要。
@@ -31,6 +34,9 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	ankiHost: "127.0.0.1",
 	ankiPort: 8765,
 	autoCreateMissingDecks: true,
+	backupBeforeBulkDeleteEnabled: false,
+	backupBeforeBulkDeleteExportPath: "",
+	backupBeforeBulkDeleteThreshold: 20,
 	reconcileOnStartup: true,
 	showDetailedErrorNotices: false,
 	enableVerboseLogging: false,
@@ -74,6 +80,22 @@ export function loadSettings(settings?: unknown): ObakSettings {
 
 	if (typeof settings.autoCreateMissingDecks === "boolean") {
 		normalized.autoCreateMissingDecks = settings.autoCreateMissingDecks;
+	}
+
+	if (typeof settings.backupBeforeBulkDeleteEnabled === "boolean") {
+		normalized.backupBeforeBulkDeleteEnabled = settings.backupBeforeBulkDeleteEnabled;
+	}
+
+	if (typeof settings.backupBeforeBulkDeleteExportPath === "string") {
+		normalized.backupBeforeBulkDeleteExportPath = settings.backupBeforeBulkDeleteExportPath;
+	}
+
+	if (
+		typeof settings.backupBeforeBulkDeleteThreshold === "number" &&
+		Number.isInteger(settings.backupBeforeBulkDeleteThreshold) &&
+		settings.backupBeforeBulkDeleteThreshold >= 0
+	) {
+		normalized.backupBeforeBulkDeleteThreshold = settings.backupBeforeBulkDeleteThreshold;
 	}
 
 	if (typeof settings.reconcileOnStartup === "boolean") {
@@ -176,6 +198,55 @@ export class ObakSettingTab extends PluginSettingTab {
 						await this.plugin.savePluginData();
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName("Backup before bulk delete")
+			.setDesc(
+				"When pending note deletions are greater than the threshold below, export the configured default deck before continuing.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.backupBeforeBulkDeleteEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.backupBeforeBulkDeleteEnabled = value;
+						await this.plugin.savePluginData();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Bulk delete backup export path")
+			.setDesc(
+				"Export directory or base .apkg path. A timestamped filename will be generated automatically from it.",
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("D:\\AnkiBackups")
+					.setValue(this.plugin.settings.backupBeforeBulkDeleteExportPath)
+					.onChange(async (value) => {
+						this.plugin.settings.backupBeforeBulkDeleteExportPath = value.trim();
+						await this.plugin.savePluginData();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Bulk delete backup threshold")
+			.setDesc(
+				"Trigger deck export only when pending note deletions are greater than this number. Set 0 to export before any delete.",
+			)
+			.addText((text) => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "0";
+				return text
+					.setPlaceholder(String(DEFAULT_SETTINGS.backupBeforeBulkDeleteThreshold))
+					.setValue(String(this.plugin.settings.backupBeforeBulkDeleteThreshold))
+					.onChange(async (value) => {
+						const threshold = Number.parseInt(value, 10);
+						if (Number.isInteger(threshold) && threshold >= 0) {
+							this.plugin.settings.backupBeforeBulkDeleteThreshold = threshold;
+							await this.plugin.savePluginData();
+						}
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Reconcile on startup")

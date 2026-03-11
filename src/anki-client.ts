@@ -276,6 +276,31 @@ export class AnkiClient {
 		});
 	}
 
+	async exportPackage(
+		deckName: string,
+		path: string,
+		includeSched = true,
+	): Promise<void> {
+		const normalizedDeckName = deckName.trim();
+		if (!normalizedDeckName) {
+			throw new AnkiConnectError("Backup export deck is empty.");
+		}
+
+		const normalizedPath = path.trim();
+		if (!normalizedPath) {
+			throw new AnkiConnectError("Backup export path is empty.");
+		}
+
+		const result = await this.call<boolean>("exportPackage", {
+			deck: normalizedDeckName,
+			path: normalizedPath,
+			includeSched,
+		});
+		if (result !== true) {
+			throw new AnkiConnectError("AnkiConnect exportPackage reported failure.");
+		}
+	}
+
 	private async ensureObakModel(): Promise<void> {
 		// 先确认模型存在；存在时再严格校验字段顺序是否与插件预期一致。
 		const modelNames = await this.getModelNames();
