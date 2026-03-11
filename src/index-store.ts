@@ -244,7 +244,7 @@ export class IndexStore {
 				filePath,
 				ankiNoteId: card.noteId,
 				lastSyncedRev: preserveSyncedRev
-					? existingRecord?.lastSyncedRev ?? (card.noteId ? card.rev : null)
+					? existingRecord?.lastSyncedRev ?? null
 					: card.rev,
 				lastSeenAt: now,
 			};

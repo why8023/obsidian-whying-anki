@@ -35,6 +35,7 @@ interface PreparedCardState {
 	originalCard: ParsedCard;
 	finalCard: ParsedCard;
 	previousSyncedRev: string | null;
+	needsRetry: boolean;
 }
 
 // 单文件在进入同步前的准备结果。
@@ -264,7 +265,6 @@ export async function rebuildSyncIndex(
 ): Promise<LocalRefreshResult> {
 	const files = plugin.app.vault.getMarkdownFiles();
 	const currentFilePaths = new Set(files.map((file) => file.path));
-	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
 	const scannedFiles = await filterScannedFilesWithUidConflicts(
 		plugin,
@@ -324,9 +324,6 @@ export async function rebuildSyncIndex(
 		);
 		cleanFilePaths.push(scannedFile.file.path);
 	}
-
-	rebuiltStore.setLastSyncAt(Date.now());
-	rebuiltStore.setLastScanConfigHash(scanConfigSignature);
 
 	const nextIndex = rebuiltStore.getSnapshot();
 	nextIndex.pendingDeleteNoteIds = plugin.indexStore.getPendingDeleteNoteIds();
@@ -834,6 +831,7 @@ async function syncCardsToAnkiForFiles(
 			result.runtimeErrors,
 		);
 		const rewriteRequired = rewrites.length > 0;
+		const fileNeedsRetry = syncedStates.some((state) => state.needsRetry);
 
 		if (preparedFile.fileRewritten || rewritten) {
 			result.filesRewritten += 1;
@@ -843,6 +841,7 @@ async function syncCardsToAnkiForFiles(
 			parseErrors: scannedFile.errors.length,
 			fileRewritten: preparedFile.fileRewritten,
 			endMarkerRewritten: rewritten,
+			needsRetry: fileNeedsRetry,
 		});
 
 		plugin.indexStore.setFileCards(
@@ -855,7 +854,9 @@ async function syncCardsToAnkiForFiles(
 			},
 		);
 
-		if (!rewriteRequired || rewritten) {
+		if (fileNeedsRetry) {
+			plugin.markFileDirty(scannedFile.file.path);
+		} else if (!rewriteRequired || rewritten) {
 			cleanFilePaths.push(scannedFile.file.path);
 		} else {
 			plugin.markFileDirty(scannedFile.file.path);
@@ -952,6 +953,7 @@ async function prepareScannedFile(
 				// 优先沿用索引中记录的“上次成功同步 rev”，否则退回文件里现存的 rev。
 				previousSyncedRev:
 					existingRecord?.lastSyncedRev ?? (resolvedNoteId ? originalCard.rev : null),
+				needsRetry: false,
 			};
 		}),
 	);
@@ -1069,6 +1071,7 @@ async function syncPreparedCard(
 		result.runtimeErrors.push(formatCardError(card, "Card deck is empty."));
 		return {
 			...state,
+			needsRetry: false,
 			finalCard: {
 				...card,
 				rev: state.previousSyncedRev,
@@ -1083,6 +1086,7 @@ async function syncPreparedCard(
 		);
 		return {
 			...state,
+			needsRetry: true,
 			finalCard: {
 				...card,
 				noteId: null,
@@ -1104,6 +1108,7 @@ async function syncPreparedCard(
 		);
 		return {
 			...state,
+			needsRetry: true,
 			finalCard: {
 				...card,
 				rev: state.previousSyncedRev,
@@ -1138,6 +1143,7 @@ async function syncPreparedCard(
 				);
 				return {
 					...state,
+					needsRetry: true,
 					finalCard: {
 						...card,
 						noteId,
@@ -1148,6 +1154,7 @@ async function syncPreparedCard(
 
 			return {
 				...state,
+				needsRetry: false,
 				finalCard: {
 					...card,
 					noteId,
@@ -1160,6 +1167,7 @@ async function syncPreparedCard(
 			logVerbose(plugin, `Failed to create Anki note for ${getCardLocationKey(card)}.`, error);
 			return {
 				...state,
+				needsRetry: true,
 				finalCard: {
 					...card,
 					noteId: null,
@@ -1193,6 +1201,7 @@ async function syncPreparedCard(
 		logVerbose(plugin, `Failed to update Anki note for ${getCardLocationKey(card)}.`, error);
 		return {
 			...state,
+			needsRetry: true,
 			finalCard: {
 				...card,
 				rev: state.previousSyncedRev,
@@ -1951,7 +1960,12 @@ function selectFilesForIncrementalSync(
 	const files = forceFullScan
 		? allFiles
 		: allFiles.filter((file) =>
-				shouldIncrementallySyncFile(file, dirtyPaths, indexSnapshot.lastSyncAt),
+				shouldIncrementallySyncFile(
+					file,
+					dirtyPaths,
+					indexSnapshot.lastSyncAt,
+					indexSnapshot,
+				),
 		  );
 
 	return {
@@ -1965,9 +1979,14 @@ function shouldIncrementallySyncFile(
 	file: TFile,
 	dirtyPaths: ReadonlySet<string>,
 	lastSyncAt: number | null,
+	indexSnapshot: PluginIndex,
 ): boolean {
 	// dirty 优先；否则再根据文件创建/修改时间与上次同步时间比较。
 	if (dirtyPaths.has(file.path)) {
+		return true;
+	}
+
+	if (hasTrackedCardsPendingSync(indexSnapshot, file.path)) {
 		return true;
 	}
 
@@ -1976,4 +1995,14 @@ function shouldIncrementallySyncFile(
 	}
 
 	return file.stat.mtime > lastSyncAt || file.stat.ctime > lastSyncAt;
+}
+
+function hasTrackedCardsPendingSync(
+	indexSnapshot: PluginIndex,
+	filePath: string,
+): boolean {
+	return (indexSnapshot.uidsByFile[filePath] ?? []).some((uid) => {
+		const record = indexSnapshot.cardsByUid[uid];
+		return record ? !record.ankiNoteId || record.lastSyncedRev === null : false;
+	});
 }
