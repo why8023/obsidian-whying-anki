@@ -17,6 +17,7 @@ export interface ObakSettings {
 	backupBeforeBulkDeleteEnabled: boolean;
 	backupBeforeBulkDeleteExportPath: string;
 	backupBeforeBulkDeleteThreshold: number;
+	autoSyncCurrentFile: boolean;
 	// 插件启动时是否自动对账缺失文件。
 	reconcileOnStartup: boolean;
 	// notice 中显示完整错误列表，还是只显示摘要。
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	backupBeforeBulkDeleteExportPath: "",
 	backupBeforeBulkDeleteThreshold: 20,
 	reconcileOnStartup: true,
+	autoSyncCurrentFile: false,
 	showDetailedErrorNotices: false,
 	enableVerboseLogging: false,
 };
@@ -100,6 +102,10 @@ export function loadSettings(settings?: unknown): ObakSettings {
 
 	if (typeof settings.reconcileOnStartup === "boolean") {
 		normalized.reconcileOnStartup = settings.reconcileOnStartup;
+	}
+
+	if (typeof settings.autoSyncCurrentFile === "boolean") {
+		normalized.autoSyncCurrentFile = settings.autoSyncCurrentFile;
 	}
 
 	if (typeof settings.showDetailedErrorNotices === "boolean") {
@@ -256,6 +262,20 @@ export class ObakSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.reconcileOnStartup)
 					.onChange(async (value) => {
 						this.plugin.settings.reconcileOnStartup = value;
+						await this.plugin.savePluginData();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Auto-sync current file")
+			.setDesc(
+				"Wait 5 seconds after you stop editing or leave the current file, then sync that file to Anki automatically. Auto sync never overlaps an in-flight sync.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoSyncCurrentFile)
+					.onChange(async (value) => {
+						this.plugin.settings.autoSyncCurrentFile = value;
 						await this.plugin.savePluginData();
 					}),
 			);

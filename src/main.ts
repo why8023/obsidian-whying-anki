@@ -34,6 +34,7 @@ export default class ObakPlugin extends Plugin {
 		string,
 		{ count: number; expiry: number }
 	>();
+	private syncInFlight = false;
 
 	async onload(): Promise<void> {
 		// data.json 中既存放设置，也存放上一次同步索引。
@@ -184,5 +185,25 @@ export default class ObakPlugin extends Plugin {
 		}
 
 		return true;
+	}
+
+	async runExclusiveSync<T>(
+		label: string,
+		task: () => Promise<T>,
+	): Promise<T | null> {
+		if (this.syncInFlight) {
+			logVerbose(this, `Skipped ${label} because another sync is already running.`);
+			return null;
+		}
+
+		this.syncInFlight = true;
+		logVerbose(this, `Starting ${label}.`);
+
+		try {
+			return await task();
+		} finally {
+			this.syncInFlight = false;
+			logVerbose(this, `Finished ${label}.`);
+		}
 	}
 }

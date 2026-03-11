@@ -183,6 +183,7 @@ export interface ObakPluginApi {
 	getDirtyFilePaths(): string[];
 	markFileDirty(filePath: string): void;
 	registerInternalFileWrite(filePath: string): void;
+	runExclusiveSync<T>(label: string, task: () => Promise<T>): Promise<T | null>;
 	savePluginData(): Promise<void>;
 }
 

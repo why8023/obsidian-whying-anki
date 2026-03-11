@@ -175,27 +175,35 @@ async function runSyncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	// 全量同步会扫描当前 vault 的所有 Markdown 文件。
-	const progressNotice = new SyncProgressNotice("Syncing cards to Anki");
-	logVerbose(plugin, "Starting full sync to Anki.");
+	const started = await plugin.runExclusiveSync("full sync", async () => {
+		const progressNotice = new SyncProgressNotice("Syncing cards to Anki");
+		logVerbose(plugin, "Starting full sync to Anki.");
 
-	try {
-		const result = await syncCardsToAnki(plugin, {
-			onProgress: (progress) => progressNotice.update(progress),
-		});
-		reportSyncResult(plugin, result, "Full sync");
-	} catch (error) {
-		logError("Full sync failed.", error);
-		new Notice(
-			buildNoticeMessage({
-				label: "Anki sync",
-				title: "Full sync failed",
-				summary: asErrorMessage(error),
-				tone: "danger",
-			}),
-			NOTICE_PERSIST_MS,
-		);
-	} finally {
-		progressNotice.hide();
+		try {
+			const result = await syncCardsToAnki(plugin, {
+				onProgress: (progress) => progressNotice.update(progress),
+			});
+			reportSyncResult(plugin, result, "Full sync");
+		} catch (error) {
+			logError("Full sync failed.", error);
+			new Notice(
+				buildNoticeMessage({
+					label: "Anki sync",
+					title: "Full sync failed",
+					summary: asErrorMessage(error),
+					tone: "danger",
+				}),
+				NOTICE_PERSIST_MS,
+			);
+		} finally {
+			progressNotice.hide();
+		}
+
+		return true;
+	});
+
+	if (started === null) {
+		showSyncBusyNotice("Full sync");
 	}
 }
 
@@ -203,27 +211,35 @@ async function runSyncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	// 增量同步只处理脏文件、最近改动文件，或索引判断必须重扫的文件。
-	const progressNotice = new SyncProgressNotice("Incremental Anki sync");
-	logVerbose(plugin, "Starting incremental sync to Anki.");
+	const started = await plugin.runExclusiveSync("incremental sync", async () => {
+		const progressNotice = new SyncProgressNotice("Incremental Anki sync");
+		logVerbose(plugin, "Starting incremental sync to Anki.");
 
-	try {
-		const result = await syncChangedCardsToAnki(plugin, {
-			onProgress: (progress) => progressNotice.update(progress),
-		});
-		reportSyncResult(plugin, result, "Incremental sync");
-	} catch (error) {
-		logError("Incremental sync failed.", error);
-		new Notice(
-			buildNoticeMessage({
-				label: "Anki sync",
-				title: "Incremental sync failed",
-				summary: asErrorMessage(error),
-				tone: "danger",
-			}),
-			NOTICE_PERSIST_MS,
-		);
-	} finally {
-		progressNotice.hide();
+		try {
+			const result = await syncChangedCardsToAnki(plugin, {
+				onProgress: (progress) => progressNotice.update(progress),
+			});
+			reportSyncResult(plugin, result, "Incremental sync");
+		} catch (error) {
+			logError("Incremental sync failed.", error);
+			new Notice(
+				buildNoticeMessage({
+					label: "Anki sync",
+					title: "Incremental sync failed",
+					summary: asErrorMessage(error),
+					tone: "danger",
+				}),
+				NOTICE_PERSIST_MS,
+			);
+		} finally {
+			progressNotice.hide();
+		}
+
+		return true;
+	});
+
+	if (started === null) {
+		showSyncBusyNotice("Incremental sync");
 	}
 }
 
@@ -367,4 +383,16 @@ function asErrorMessage(error: unknown): string {
 
 function getNoticeDuration(hasIssues: boolean): number {
 	return hasIssues ? NOTICE_PERSIST_MS : NOTICE_AUTO_HIDE_MS;
+}
+
+function showSyncBusyNotice(label: string): void {
+	new Notice(
+		buildNoticeMessage({
+			label: "Anki sync",
+			title: `${label} skipped`,
+			summary: "Another sync is already running. Wait for it to finish before starting a new one.",
+			tone: "warning",
+		}),
+		NOTICE_AUTO_HIDE_MS,
+	);
 }

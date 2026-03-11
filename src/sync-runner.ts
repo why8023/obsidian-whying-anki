@@ -372,6 +372,48 @@ export async function syncCardsToAnki(
  * 只同步最近变动过的文件。
  * 如果存在待删 note、从未同步过，或扫描配置发生变化，则会自动退化为全量扫描。
  */
+/**
+ * Sync a single markdown file without advancing the global incremental sync cursor.
+ */
+export async function syncMarkdownFileToAnki(
+	plugin: Plugin & ObakPluginApi,
+	file: TFile,
+	options?: SyncExecutionOptions,
+): Promise<SyncToAnkiResult> {
+	logVerbose(plugin, `Running single-file sync workflow for ${file.path}.`);
+	reportSyncProgress(options, {
+		message: "Reconciling vault changes...",
+		completed: 0,
+		total: null,
+	});
+	const reconcileResult = await reconcileMissingFiles(plugin);
+	if (reconcileResult.deferred) {
+		const result = createSyncResult();
+		result.runtimeErrors.push(
+			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
+		);
+		logVerbose(
+			plugin,
+			"Skipped single-file sync because reconcile was deferred while vault files are still loading.",
+			{ filePath: file.path },
+		);
+		return result;
+	}
+
+	return syncCardsToAnkiForFiles(
+		plugin,
+		[file],
+		buildScanConfigSignature(plugin.settings),
+		false,
+		options,
+	);
+}
+
+/**
+ * Only sync recently changed files.
+ * Falls back to a full scan when pending deletes exist, nothing has been synced yet,
+ * or scan-affecting settings changed.
+ */
 export async function syncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
