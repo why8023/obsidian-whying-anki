@@ -10,7 +10,7 @@ import { logVerbose } from "./logger";
 import { computeCardRevision, generateCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
 import type { ObakSettings } from "./settings";
-import { serializeCardEnd } from "./syntax";
+import { parseCardsFromMarkdown, serializeCardEnd } from "./syntax";
 import type {
 	CardIndexRecord,
 	LocalRefreshResult,
@@ -86,6 +86,11 @@ interface UidRecoveryResult {
 interface UidConflictFilterResult {
 	conflictMessages: string[];
 	safeScannedFiles: ScannedFile[];
+}
+
+interface VaultUidPresence {
+	filePath: string;
+	startLine: number | null;
 }
 
 // 只要影响“哪些文件需要重新扫描”的配置发生变化，就要递增这个版本。
@@ -197,7 +202,7 @@ export async function refreshLocalMetadataForFiles(
 		filePaths: files.map((file) => file.path),
 	});
 	const indexSnapshot = plugin.indexStore.getSnapshot();
-	const scannedFiles = filterScannedFilesWithUidConflicts(
+	const scannedFiles = await filterScannedFilesWithUidConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
@@ -266,7 +271,7 @@ export async function rebuildSyncIndex(
 	const files = plugin.app.vault.getMarkdownFiles();
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const indexSnapshot = plugin.indexStore.getSnapshot();
-	const scannedFiles = filterScannedFilesWithUidConflicts(
+	const scannedFiles = await filterScannedFilesWithUidConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
@@ -505,7 +510,7 @@ async function syncCardsToAnkiForFiles(
 		total: null,
 	});
 	const indexSnapshot = plugin.indexStore.getSnapshot();
-	const scannedFiles = filterScannedFilesWithUidConflicts(
+	const scannedFiles = await filterScannedFilesWithUidConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
@@ -619,6 +624,13 @@ async function syncCardsToAnkiForFiles(
 
 	// 当前仍然活跃的 note 不应该继续留在待删队列里。
 	plugin.indexStore.dequeuePendingDelete(collectActiveNoteIds(preparedFiles));
+	const activeUids = collectActiveUids(preparedFiles);
+	const movedDeletedUidPresences = await findUidPresencesInVault(
+		plugin,
+		preparedFiles.flatMap((preparedFile) =>
+			preparedFile.deletedUids.filter((uid) => !activeUids.has(uid)),
+		),
+	);
 
 	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
 		client,
@@ -640,6 +652,8 @@ async function syncCardsToAnkiForFiles(
 
 	const deleteNoteIds = new Set<string>();
 	const orphanDeletedUids = new Set<string>();
+	const movedDeletedUids = new Set<string>();
+	const movedDeletedNoteIds = new Set<string>();
 
 	for (const preparedFile of preparedFiles) {
 		if (preparedFile.scannedFile.errors.length > 0) {
@@ -652,6 +666,14 @@ async function syncCardsToAnkiForFiles(
 			.filter((record): record is NonNullable<typeof record> => record !== undefined);
 
 		for (const record of deletedRecords) {
+			if (activeUids.has(record.uid) || movedDeletedUidPresences.has(record.uid)) {
+				movedDeletedUids.add(record.uid);
+				if (record.ankiNoteId) {
+					movedDeletedNoteIds.add(record.ankiNoteId);
+				}
+				continue;
+			}
+
 			if (record.ankiNoteId) {
 				deleteNoteIds.add(record.ankiNoteId);
 			} else {
@@ -665,11 +687,16 @@ async function syncCardsToAnkiForFiles(
 		plugin.indexStore.removeCardsByUids([...orphanDeletedUids]);
 	}
 
+	if (movedDeletedNoteIds.size > 0) {
+		plugin.indexStore.dequeuePendingDelete([...movedDeletedNoteIds]);
+	}
+
 	plugin.indexStore.queuePendingDelete([...deleteNoteIds]);
 	const pendingDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
 	let deletePhaseSucceeded = pendingDeleteIds.length === 0;
 	logVerbose(plugin, "Prepared note deletions.", {
 		deleteCandidates: deleteNoteIds.size,
+		movedCandidates: movedDeletedUids.size,
 		pendingDeletes: pendingDeleteIds.length,
 		orphanDeletedUids: orphanDeletedUids.size,
 	});
@@ -1169,6 +1196,16 @@ function collectActiveNoteIds(preparedFiles: PreparedSyncFile[]): string[] {
 	];
 }
 
+function collectActiveUids(preparedFiles: PreparedSyncFile[]): Set<string> {
+	return new Set(
+		preparedFiles.flatMap((preparedFile) =>
+			preparedFile.cards
+				.map((state) => state.finalCard.uid?.trim() ?? "")
+				.filter(Boolean),
+		),
+	);
+}
+
 async function commitFileRewrites(
 	plugin: ObakPluginApi,
 	scannedFile: ScannedFile,
@@ -1403,16 +1440,17 @@ function processDeletedFiles(
 	return { changed, filePaths, removedUnsyncedCards };
 }
 
-function filterScannedFilesWithUidConflicts(
+async function filterScannedFilesWithUidConflicts(
 	plugin: ObakPluginApi,
 	scannedFiles: ScannedFile[],
 	indexSnapshot: PluginIndex,
-): UidConflictFilterResult {
+): Promise<UidConflictFilterResult> {
 	// 先收集本轮扫描中“每个 UID 被哪些卡片声明”。
 	const claimsByUid = new Map<string, ParsedCard[]>();
 	const scannedFilePaths = new Set(scannedFiles.map((scannedFile) => scannedFile.file.path));
 	const conflictMessages: string[] = [];
 	const conflictedFilePaths = new Set<string>();
+	const candidateUids = new Set<string>();
 
 	for (const scannedFile of scannedFiles) {
 		for (const card of scannedFile.cards) {
@@ -1425,6 +1463,38 @@ function filterScannedFilesWithUidConflicts(
 			claimsByUid.set(card.uid, claims);
 		}
 	}
+
+	for (const [uid, claims] of claimsByUid.entries()) {
+		if (claims.length !== 1) {
+			continue;
+		}
+
+		const claim = claims[0];
+		if (!claim) {
+			continue;
+		}
+
+		const existingRecord = findCardIndexRecord(indexSnapshot, uid);
+		if (!existingRecord || existingRecord.filePath === claim.filePath) {
+			continue;
+		}
+
+		if (!plugin.app.vault.getFileByPath(existingRecord.filePath)) {
+			continue;
+		}
+
+		if (scannedFilePaths.has(existingRecord.filePath)) {
+			continue;
+		}
+
+		candidateUids.add(uid);
+	}
+
+	const liveUidPresences = await findUidPresencesInVault(
+		plugin,
+		candidateUids,
+		scannedFilePaths,
+	);
 
 	for (const [uid, claims] of claimsByUid.entries()) {
 		if (claims.length > 1) {
@@ -1456,9 +1526,14 @@ function filterScannedFilesWithUidConflicts(
 			continue;
 		}
 
+		const liveConflicts = liveUidPresences.get(uid) ?? [];
+		if (liveConflicts.length === 0) {
+			continue;
+		}
+
 		// 另一种冲突：当前扫描文件的 UID 与索引里“其他仍存在文件”的 UID 撞车。
 		conflictMessages.push(
-			`Duplicate card UID "${uid}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingRecord.filePath}. Remove the duplicate or move the original card first.`,
+			`Duplicate card UID "${uid}" at ${claim.filePath}:${claim.startLine} conflicts with ${formatUidPresenceLocations(liveConflicts)}. Remove the duplicate or move the original card first.`,
 		);
 		conflictedFilePaths.add(claim.filePath);
 	}
@@ -1480,6 +1555,65 @@ function filterScannedFilesWithUidConflicts(
 			(scannedFile) => !conflictedFilePaths.has(scannedFile.file.path),
 		),
 	};
+}
+
+async function findUidPresencesInVault(
+	plugin: ObakPluginApi,
+	uids: Iterable<string>,
+	excludedFilePaths: ReadonlySet<string> = new Set<string>(),
+): Promise<Map<string, VaultUidPresence[]>> {
+	const normalizedUids = [...new Set([...uids].map((uid) => uid.trim()).filter(Boolean))];
+	if (normalizedUids.length === 0) {
+		return new Map();
+	}
+
+	const targetUidSet = new Set(normalizedUids);
+	const presencesByUid = new Map<string, VaultUidPresence[]>();
+
+	for (const file of plugin.app.vault.getMarkdownFiles()) {
+		if (excludedFilePaths.has(file.path)) {
+			continue;
+		}
+
+		const text = await plugin.app.vault.read(file);
+		const matchedUids = normalizedUids.filter((uid) => text.includes(uid));
+		if (matchedUids.length === 0) {
+			continue;
+		}
+
+		const parsed = parseCardsFromMarkdown(text, file.path);
+		const parsedUids = new Set<string>();
+
+		for (const card of parsed.cards) {
+			const uid = card.endMeta.uid?.trim() ?? "";
+			if (!targetUidSet.has(uid)) {
+				continue;
+			}
+
+			parsedUids.add(uid);
+			const presences = presencesByUid.get(uid) ?? [];
+			presences.push({
+				filePath: file.path,
+				startLine: card.startLine,
+			});
+			presencesByUid.set(uid, presences);
+		}
+
+		for (const uid of matchedUids) {
+			if (parsedUids.has(uid)) {
+				continue;
+			}
+
+			const presences = presencesByUid.get(uid) ?? [];
+			presences.push({
+				filePath: file.path,
+				startLine: null,
+			});
+			presencesByUid.set(uid, presences);
+		}
+	}
+
+	return presencesByUid;
 }
 
 async function buildBlockedCreateCardKeys(
@@ -1655,6 +1789,16 @@ function buildObakNoteInput(
 function formatCardLocations(cards: Pick<ParsedCard, "filePath" | "startLine">[]): string {
 	return cards
 		.map((card) => `${card.filePath}:${card.startLine}`)
+		.join(", ");
+}
+
+function formatUidPresenceLocations(presences: VaultUidPresence[]): string {
+	return presences
+		.map((presence) =>
+			presence.startLine === null
+				? presence.filePath
+				: `${presence.filePath}:${presence.startLine}`,
+		)
 		.join(", ");
 }
 
