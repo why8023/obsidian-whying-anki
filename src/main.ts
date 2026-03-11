@@ -16,6 +16,9 @@ export default class ObakPlugin extends Plugin {
 	settings: ObakSettings = DEFAULT_SETTINGS;
 	indexStore = new IndexStore();
 	private dirtyFilePaths = new Set<string>();
+	private startupReconcileCompleted = false;
+	private startupReconcileInFlight = false;
+	private startupReconcileRetryPending = false;
 	private internalWriteStateByPath = new Map<
 		string,
 		{ count: number; expiry: number }
@@ -38,16 +41,55 @@ export default class ObakPlugin extends Plugin {
 		registerObsidianEventHandlers(this);
 
 		if (this.settings.reconcileOnStartup) {
+			this.registerEvent(
+				this.app.metadataCache.on("resolved", () => {
+					if (
+						!this.startupReconcileRetryPending ||
+						this.startupReconcileCompleted ||
+						this.startupReconcileInFlight
+					) {
+						return;
+					}
+
+					this.startupReconcileRetryPending = false;
+					void this.runStartupReconcile("metadata-cache-resolved");
+				}),
+			);
+
 			this.app.workspace.onLayoutReady(() => {
-				void this.runStartupReconcile();
+				void this.runStartupReconcile("layout-ready");
 			});
 		}
 	}
 
-	private async runStartupReconcile(): Promise<void> {
-		logVerbose(this, "Running startup reconcile for missing files.");
-		const result = await reconcileMissingFiles(this);
-		logVerbose(this, "Startup reconcile finished.", result);
+	private async runStartupReconcile(
+		trigger: "layout-ready" | "metadata-cache-resolved",
+	): Promise<void> {
+		if (this.startupReconcileCompleted || this.startupReconcileInFlight) {
+			return;
+		}
+
+		this.startupReconcileInFlight = true;
+		logVerbose(this, "Running startup reconcile for missing files.", { trigger });
+
+		try {
+			const result = await reconcileMissingFiles(this);
+			if (result.deferred) {
+				this.startupReconcileRetryPending = true;
+				logVerbose(
+					this,
+					"Deferred startup reconcile until metadata cache finishes resolving files.",
+					{ trigger },
+				);
+				return;
+			}
+
+			this.startupReconcileCompleted = true;
+			this.startupReconcileRetryPending = false;
+			logVerbose(this, "Startup reconcile finished.", result);
+		} finally {
+			this.startupReconcileInFlight = false;
+		}
 	}
 
 	async savePluginData(): Promise<void> {

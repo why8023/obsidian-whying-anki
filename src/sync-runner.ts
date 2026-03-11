@@ -50,6 +50,12 @@ interface IncrementalSyncSelection {
 	staleDirtyPaths: string[];
 }
 
+interface MissingFileReconcileResult {
+	missingFilePaths: string[];
+	removedUnsyncedCards: number;
+	deferred: boolean;
+}
+
 interface DeletedFileProcessingResult {
 	changed: boolean;
 	filePaths: string[];
@@ -82,7 +88,7 @@ export async function validateMarkdownFile(
 
 export async function reconcileMissingFiles(
 	plugin: ObakPluginApi,
-): Promise<{ missingFilePaths: string[]; removedUnsyncedCards: number }> {
+): Promise<MissingFileReconcileResult> {
 	const snapshot = plugin.indexStore.getSnapshot();
 	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
 	const trackedPaths = Object.keys(snapshot.uidsByFile);
@@ -96,6 +102,22 @@ export async function reconcileMissingFiles(
 		currentFiles: currentPaths.size,
 		missingTrackedFiles: missingFilePaths.length,
 	});
+
+	if (trackedPaths.length > 0 && currentPaths.size === 0) {
+		logVerbose(
+			plugin,
+			"Deferred reconcile because tracked files exist but the vault markdown file list is still empty.",
+			{
+				trackedFiles: trackedPaths.length,
+				currentFiles: currentPaths.size,
+			},
+		);
+		return {
+			missingFilePaths: [],
+			removedUnsyncedCards: 0,
+			deferred: true,
+		};
+	}
 
 	for (const filePath of missingFilePaths) {
 		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
@@ -116,6 +138,7 @@ export async function reconcileMissingFiles(
 	const result = {
 		missingFilePaths: deletedResult.filePaths,
 		removedUnsyncedCards: deletedResult.removedUnsyncedCards,
+		deferred: false,
 	};
 	logVerbose(plugin, "Finished reconciling missing files.", result);
 	return result;
@@ -281,7 +304,19 @@ export async function syncCardsToAnki(
 		completed: 0,
 		total: null,
 	});
-	await reconcileMissingFiles(plugin);
+	const reconcileResult = await reconcileMissingFiles(plugin);
+	if (reconcileResult.deferred) {
+		const result = createSyncResult();
+		result.runtimeErrors.push(
+			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
+		);
+		logVerbose(
+			plugin,
+			"Skipped full sync because reconcile was deferred while vault files are still loading.",
+		);
+		return result;
+	}
+
 	return syncCardsToAnkiForFiles(
 		plugin,
 		plugin.app.vault.getMarkdownFiles(),
@@ -301,7 +336,18 @@ export async function syncChangedCardsToAnki(
 		completed: 0,
 		total: null,
 	});
-	await reconcileMissingFiles(plugin);
+	const reconcileResult = await reconcileMissingFiles(plugin);
+	if (reconcileResult.deferred) {
+		const result = createSyncResult();
+		result.runtimeErrors.push(
+			"Vault markdown files are still loading. Sync was skipped to avoid false deletions; wait for Obsidian to finish loading and try again.",
+		);
+		logVerbose(
+			plugin,
+			"Skipped incremental sync because reconcile was deferred while vault files are still loading.",
+		);
+		return result;
+	}
 
 	const selection = selectFilesForIncrementalSync(
 		plugin,
