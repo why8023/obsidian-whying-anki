@@ -1,4 +1,5 @@
 import { MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { logError, logVerbose } from "../logger";
 import { buildNoticeMessage, formatParseError, SyncProgressNotice } from "../notices";
 import {
 	rebuildSyncIndex,
@@ -80,10 +81,15 @@ async function runValidateCurrentFile(
 	plugin: Plugin & ObakPluginApi,
 	file: TFile,
 ): Promise<void> {
+	logVerbose(plugin, `Validating card syntax for ${file.path}.`);
 	const scannedFile = await validateMarkdownFile(plugin, file);
 	const issueCount = scannedFile.errors.length;
 
 	logParseErrors(scannedFile.errors);
+	logVerbose(plugin, `Validation finished for ${file.path}.`, {
+		cards: scannedFile.cards.length,
+		issues: issueCount,
+	});
 	new Notice(
 		buildNoticeMessage(
 			issueCount === 0
@@ -100,29 +106,34 @@ async function runRefreshCurrentFile(
 	plugin: Plugin & ObakPluginApi,
 	file: TFile,
 ): Promise<void> {
+	logVerbose(plugin, `Refreshing local metadata for ${file.path}.`);
 	const result = await refreshLocalMetadataForFiles(plugin, [file]);
 	reportResult(
 		"Updated current file metadata",
 		result,
 		plugin.settings.showDetailedErrorNotices,
 	);
+	logVerbose(plugin, `Finished refreshing local metadata for ${file.path}.`, result);
 }
 
 async function runRebuildSyncIndex(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
+	logVerbose(plugin, "Rebuilding sync index.");
 	const result = await rebuildSyncIndex(plugin);
 	reportResult(
 		"Rebuilt sync index",
 		result,
 		plugin.settings.showDetailedErrorNotices,
 	);
+	logVerbose(plugin, "Finished rebuilding sync index.", result);
 }
 
 async function runSyncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	const progressNotice = new SyncProgressNotice("Syncing cards to Anki");
+	logVerbose(plugin, "Starting full sync to Anki.");
 
 	try {
 		const result = await syncCardsToAnki(plugin, {
@@ -130,7 +141,7 @@ async function runSyncCardsToAnki(
 		});
 		reportSyncResult(plugin, result, "Synced");
 	} catch (error) {
-		console.error("[obsidian-obak]", error);
+		logError("Full sync failed.", error);
 		new Notice(`Sync failed: ${asErrorMessage(error)}`, 7000);
 	} finally {
 		progressNotice.hide();
@@ -141,6 +152,7 @@ async function runSyncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<void> {
 	const progressNotice = new SyncProgressNotice("Incremental Anki sync");
+	logVerbose(plugin, "Starting incremental sync to Anki.");
 
 	try {
 		const result = await syncChangedCardsToAnki(plugin, {
@@ -148,7 +160,7 @@ async function runSyncChangedCardsToAnki(
 		});
 		reportSyncResult(plugin, result, "Incremental sync");
 	} catch (error) {
-		console.error("[obsidian-obak]", error);
+		logError("Incremental sync failed.", error);
 		new Notice(`Incremental sync failed: ${asErrorMessage(error)}`, 7000);
 	} finally {
 		progressNotice.hide();
@@ -197,19 +209,18 @@ function reportSyncResult(
 		),
 		7000,
 	);
+	logVerbose(plugin, `${prefix} summary.`, result);
 }
 
 function logParseErrors(errors: LocalRefreshResult["parseErrors"]): void {
 	for (const error of errors) {
-		console.error(
-			`[obsidian-obak] ${error.filePath}:${error.line} ${error.message}`,
-		);
+		logError(`${error.filePath}:${error.line} ${error.message}`);
 	}
 }
 
 function logRuntimeErrors(errors: string[]): void {
 	for (const error of errors) {
-		console.error(`[obsidian-obak] ${error}`);
+		logError(error);
 	}
 }
 

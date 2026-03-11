@@ -5,6 +5,7 @@ import {
 	type ObakNoteInput,
 } from "./anki-model";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
+import { logVerbose } from "./logger";
 import { computeCardRevision, generateCardUid } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
 import type { ObakSettings } from "./settings";
@@ -90,6 +91,12 @@ export async function reconcileMissingFiles(
 	);
 	let changed = false;
 
+	logVerbose(plugin, "Reconciling missing files.", {
+		trackedFiles: trackedPaths.length,
+		currentFiles: currentPaths.size,
+		missingTrackedFiles: missingFilePaths.length,
+	});
+
 	for (const filePath of missingFilePaths) {
 		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
 	}
@@ -106,16 +113,22 @@ export async function reconcileMissingFiles(
 		await plugin.savePluginData();
 	}
 
-	return {
+	const result = {
 		missingFilePaths: deletedResult.filePaths,
 		removedUnsyncedCards: deletedResult.removedUnsyncedCards,
 	};
+	logVerbose(plugin, "Finished reconciling missing files.", result);
+	return result;
 }
 
 export async function refreshLocalMetadataForFiles(
 	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
 ): Promise<LocalRefreshResult> {
+	logVerbose(plugin, "Refreshing local metadata.", {
+		fileCount: files.length,
+		filePaths: files.map((file) => file.path),
+	});
 	const indexSnapshot = plugin.indexStore.getSnapshot();
 	const scannedFiles = filterScannedFilesWithUidConflicts(
 		plugin,
@@ -124,6 +137,10 @@ export async function refreshLocalMetadataForFiles(
 	);
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
+	logVerbose(plugin, "Scanned files for local metadata refresh.", {
+		safeFiles: scannedFiles.safeScannedFiles.length,
+		conflicts: scannedFiles.conflictMessages.length,
+	});
 
 	result.runtimeErrors.push(...scannedFiles.conflictMessages);
 
@@ -148,6 +165,11 @@ export async function refreshLocalMetadataForFiles(
 		if (rewritten) {
 			result.filesRewritten += 1;
 		}
+		logVerbose(plugin, `Prepared refreshed metadata for ${scannedFile.file.path}.`, {
+			cards: prepared.cards.length,
+			rewritten,
+			parseErrors: scannedFile.errors.length,
+		});
 
 		plugin.indexStore.setFileCards(
 			scannedFile.file.path,
@@ -162,6 +184,7 @@ export async function refreshLocalMetadataForFiles(
 
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
+	logVerbose(plugin, "Finished refreshing local metadata.", result);
 	return result;
 }
 
@@ -181,11 +204,18 @@ export async function rebuildSyncIndex(
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
 
+	logVerbose(plugin, "Rebuilding sync index from vault files.", {
+		fileCount: files.length,
+	});
+
 	if (scannedFiles.conflictMessages.length > 0) {
 		result.runtimeErrors.push(...scannedFiles.conflictMessages);
 		result.runtimeErrors.push(
 			"Rebuild aborted because duplicate card UID conflicts must be resolved first.",
 		);
+		logVerbose(plugin, "Rebuild aborted due to duplicate UID conflicts.", {
+			conflicts: scannedFiles.conflictMessages.length,
+		});
 		return result;
 	}
 
@@ -213,6 +243,11 @@ export async function rebuildSyncIndex(
 		if (rewritten) {
 			result.filesRewritten += 1;
 		}
+		logVerbose(plugin, `Rebuilt index entry for ${scannedFile.file.path}.`, {
+			cards: prepared.cards.length,
+			rewritten,
+			parseErrors: scannedFile.errors.length,
+		});
 
 		rebuiltStore.setFileCards(
 			scannedFile.file.path,
@@ -232,6 +267,7 @@ export async function rebuildSyncIndex(
 	});
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
+	logVerbose(plugin, "Finished rebuilding sync index.", result);
 	return result;
 }
 
@@ -239,6 +275,7 @@ export async function syncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	logVerbose(plugin, "Running full sync workflow.");
 	reportSyncProgress(options, {
 		message: "Reconciling vault changes...",
 		completed: 0,
@@ -258,6 +295,7 @@ export async function syncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	logVerbose(plugin, "Running incremental sync workflow.");
 	reportSyncProgress(options, {
 		message: "Reconciling vault changes...",
 		completed: 0,
@@ -269,12 +307,19 @@ export async function syncChangedCardsToAnki(
 		plugin,
 		plugin.indexStore.getSnapshot(),
 	);
+	logVerbose(plugin, "Selected files for incremental sync.", {
+		fileCount: selection.files.length,
+		filePaths: selection.files.map((file) => file.path),
+		staleDirtyPaths: selection.staleDirtyPaths,
+		scanConfigSignature: selection.scanConfigSignature,
+	});
 	plugin.clearFilesDirty(selection.staleDirtyPaths);
 
 	if (
 		selection.files.length === 0 &&
 		plugin.indexStore.getPendingDeleteNoteIds().length === 0
 	) {
+		logVerbose(plugin, "Incremental sync found no pending work.");
 		plugin.indexStore.setLastSyncAt(Date.now());
 		plugin.indexStore.setLastScanConfigHash(selection.scanConfigSignature);
 		await plugin.savePluginData();
@@ -297,6 +342,11 @@ async function syncCardsToAnkiForFiles(
 	advanceSyncCursor = false,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
+	logVerbose(plugin, "Starting sync for selected files.", {
+		fileCount: files.length,
+		filePaths: files.map((file) => file.path),
+		advanceSyncCursor,
+	});
 	reportSyncProgress(options, {
 		message: "Scanning markdown files...",
 		completed: 0,
@@ -318,6 +368,12 @@ async function syncCardsToAnkiForFiles(
 	const totalProgressSteps = 5 + totalCardsToSync;
 	let completedProgressSteps = 1;
 
+	logVerbose(plugin, "Completed markdown scan for sync.", {
+		safeFiles: scannedFiles.safeScannedFiles.length,
+		conflicts: scannedFiles.conflictMessages.length,
+		totalCardsToSync,
+	});
+
 	for (const message of scannedFiles.conflictMessages) {
 		result.runtimeErrors.push(message);
 	}
@@ -330,6 +386,7 @@ async function syncCardsToAnkiForFiles(
 
 	try {
 		await client.ensureReadyForSync();
+		logVerbose(plugin, "Anki client is ready for sync.");
 		completedProgressSteps += 1;
 		reportSyncProgress(options, {
 			message: "Connected to Anki and verified the Obak model.",
@@ -338,6 +395,7 @@ async function syncCardsToAnkiForFiles(
 		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
+		logVerbose(plugin, "Failed while preparing Anki client.", error);
 		return result;
 	}
 
@@ -352,6 +410,10 @@ async function syncCardsToAnkiForFiles(
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
 	try {
 		existingNotesById = await client.getNotesInfo(activeNoteIds);
+		logVerbose(plugin, "Loaded existing Anki notes for active cards.", {
+			activeNoteIds: activeNoteIds.length,
+			loadedNotes: existingNotesById.size,
+		});
 		completedProgressSteps += 1;
 		reportSyncProgress(options, {
 			message: "Loaded existing note information from Anki.",
@@ -360,6 +422,7 @@ async function syncCardsToAnkiForFiles(
 		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
+		logVerbose(plugin, "Failed while loading existing Anki note info.", error);
 		await plugin.savePluginData();
 		return result;
 	}
@@ -372,8 +435,10 @@ async function syncCardsToAnkiForFiles(
 
 	try {
 		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
+		logVerbose(plugin, "Ensured target decks exist for new cards.");
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
+		logVerbose(plugin, "Failed while ensuring target decks exist.", error);
 	}
 
 	const uidRecoveryResult = await recoverPreparedCardsByUid(
@@ -384,11 +449,15 @@ async function syncCardsToAnkiForFiles(
 	);
 
 	if (uidRecoveryResult.recoveredNoteIds.length > 0) {
+		logVerbose(plugin, "Recovered Anki note IDs by Obsidian UID.", {
+			recovered: uidRecoveryResult.recoveredNoteIds.length,
+		});
 		try {
 			const recoveredNotes = await client.getNotesInfo(uidRecoveryResult.recoveredNoteIds);
 			existingNotesById = new Map([...existingNotesById, ...recoveredNotes]);
 		} catch (error) {
 			result.runtimeErrors.push(asErrorMessage(error));
+			logVerbose(plugin, "Failed while loading recovered note details.", error);
 		}
 	}
 
@@ -401,6 +470,10 @@ async function syncCardsToAnkiForFiles(
 		result.runtimeErrors,
 		uidRecoveryResult.blockedCardKeys,
 	);
+	logVerbose(plugin, "Finished pre-sync validation checks.", {
+		blockedCreateCards: blockedCreateCardKeys.size,
+		uidRecoveryBlocks: uidRecoveryResult.blockedCardKeys.size,
+	});
 	completedProgressSteps += 1;
 	reportSyncProgress(options, {
 		message: "Finished pre-sync validation checks.",
@@ -436,6 +509,11 @@ async function syncCardsToAnkiForFiles(
 	plugin.indexStore.queuePendingDelete([...deleteNoteIds]);
 	const pendingDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
 	let deletePhaseSucceeded = pendingDeleteIds.length === 0;
+	logVerbose(plugin, "Prepared note deletions.", {
+		deleteCandidates: deleteNoteIds.size,
+		pendingDeletes: pendingDeleteIds.length,
+		orphanDeletedUids: orphanDeletedUids.size,
+	});
 
 	if (pendingDeleteIds.length > 0) {
 		reportSyncProgress(options, {
@@ -448,8 +526,12 @@ async function syncCardsToAnkiForFiles(
 			plugin.indexStore.removeCardsByNoteIds(pendingDeleteIds);
 			result.cardsDeleted += pendingDeleteIds.length;
 			deletePhaseSucceeded = true;
+			logVerbose(plugin, "Deleted notes removed from the vault.", {
+				deletedNotes: pendingDeleteIds.length,
+			});
 		} catch (error) {
 			result.runtimeErrors.push(asErrorMessage(error));
+			logVerbose(plugin, "Failed while deleting notes in Anki.", error);
 		}
 	}
 
@@ -474,6 +556,7 @@ async function syncCardsToAnkiForFiles(
 		for (const state of preparedFile.cards) {
 			syncedStates.push(
 				await syncPreparedCard(
+					plugin,
 					client,
 					state,
 					state.finalCard.noteId
@@ -503,6 +586,12 @@ async function syncCardsToAnkiForFiles(
 		if (preparedFile.fileRewritten || rewritten) {
 			result.filesRewritten += 1;
 		}
+		logVerbose(plugin, `Finished syncing file ${scannedFile.file.path}.`, {
+			cards: preparedFile.cards.length,
+			parseErrors: scannedFile.errors.length,
+			fileRewritten: preparedFile.fileRewritten,
+			endMarkerRewritten: rewritten,
+		});
 
 		plugin.indexStore.setFileCards(
 			scannedFile.file.path,
@@ -527,6 +616,7 @@ async function syncCardsToAnkiForFiles(
 
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
+	logVerbose(plugin, "Finished sync workflow.", result);
 	reportSyncProgress(options, {
 		message: `Finished syncing ${result.cardsProcessed} card(s).`,
 		completed: totalProgressSteps,
@@ -676,6 +766,7 @@ function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[]
 }
 
 async function syncPreparedCard(
+	plugin: ObakPluginApi,
 	client: AnkiClient,
 	state: PreparedCardState,
 	existingNote: AnkiNoteInfo | null,
@@ -685,6 +776,7 @@ async function syncPreparedCard(
 	const card = state.finalCard;
 
 	if (!card.effectiveDeck) {
+		logVerbose(plugin, `Skipped card with empty deck: ${getCardLocationKey(card)}`);
 		result.runtimeErrors.push(formatCardError(card, "Card deck is empty."));
 		return {
 			...state,
@@ -696,6 +788,10 @@ async function syncPreparedCard(
 	}
 
 	if (!allowCreate) {
+		logVerbose(
+			plugin,
+			`Blocked card creation after preflight checks: ${getCardLocationKey(card)}`,
+		);
 		return {
 			...state,
 			finalCard: {
@@ -707,6 +803,10 @@ async function syncPreparedCard(
 	}
 
 	if (existingNote && existingNote.modelName !== OBAK_MODEL_NAME) {
+		logVerbose(plugin, `Skipped card with incompatible Anki model: ${getCardLocationKey(card)}`, {
+			noteId: existingNote.noteId,
+			modelName: existingNote.modelName,
+		});
 		result.runtimeErrors.push(
 			formatCardError(
 				card,
@@ -727,9 +827,16 @@ async function syncPreparedCard(
 		try {
 			const noteId = await client.addObakNote(createInput);
 			result.cardsCreated += 1;
+			logVerbose(plugin, `Created new Anki note for ${getCardLocationKey(card)}.`, {
+				noteId,
+			});
 
 			try {
 				await client.updateObakNote(noteId, buildObakNoteInput(card, noteId));
+				logVerbose(
+					plugin,
+					`Finalized Anki note fields after creation for ${getCardLocationKey(card)}.`,
+				);
 			} catch (error) {
 				result.runtimeErrors.push(
 					formatCardError(
@@ -760,6 +867,7 @@ async function syncPreparedCard(
 			result.runtimeErrors.push(
 				formatCardError(card, formatCreateNoteErrorMessage(error)),
 			);
+			logVerbose(plugin, `Failed to create Anki note for ${getCardLocationKey(card)}.`, error);
 			return {
 				...state,
 				finalCard: {
@@ -773,6 +881,7 @@ async function syncPreparedCard(
 
 	if (state.previousSyncedRev === card.rev) {
 		result.cardsUnchanged += 1;
+		logVerbose(plugin, `Card unchanged; skipped update for ${getCardLocationKey(card)}.`);
 		return state;
 	}
 
@@ -783,9 +892,13 @@ async function syncPreparedCard(
 		);
 		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
+		logVerbose(plugin, `Updated existing Anki note for ${getCardLocationKey(card)}.`, {
+			noteId: card.noteId,
+		});
 		return state;
 	} catch (error) {
 		result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
+		logVerbose(plugin, `Failed to update Anki note for ${getCardLocationKey(card)}.`, error);
 		return {
 			...state,
 			finalCard: {
@@ -878,9 +991,13 @@ async function commitFileRewrites(
 			return rewritten;
 		});
 
+		logVerbose(plugin, `Rewrote card metadata in ${scannedFile.file.path}.`, {
+			rewriteCount: rewrites.length,
+		});
 		return true;
 	} catch (error) {
 		runtimeErrors.push(asErrorMessage(error));
+		logVerbose(plugin, `Failed to rewrite card metadata in ${scannedFile.file.path}.`, error);
 		return false;
 	}
 }
@@ -1020,6 +1137,13 @@ function filterScannedFilesWithUidConflicts(
 
 	for (const filePath of conflictedFilePaths) {
 		plugin.markFileDirty(filePath);
+	}
+
+	if (conflictMessages.length > 0) {
+		logVerbose(plugin, "Detected duplicate UID conflicts during scan.", {
+			conflicts: conflictMessages.length,
+			conflictedFiles: [...conflictedFilePaths],
+		});
 	}
 
 	return {

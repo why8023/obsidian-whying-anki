@@ -8,6 +8,7 @@ export interface ObakSettings {
 	autoCreateMissingDecks: boolean;
 	reconcileOnStartup: boolean;
 	showDetailedErrorNotices: boolean;
+	enableVerboseLogging: boolean;
 }
 
 export const DEFAULT_SETTINGS: ObakSettings = {
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	autoCreateMissingDecks: true,
 	reconcileOnStartup: true,
 	showDetailedErrorNotices: false,
+	enableVerboseLogging: false,
 };
 
 interface SettingsHost {
@@ -61,6 +63,10 @@ export function loadSettings(settings?: unknown): ObakSettings {
 
 	if (typeof settings.showDetailedErrorNotices === "boolean") {
 		normalized.showDetailedErrorNotices = settings.showDetailedErrorNotices;
+	}
+
+	if (typeof settings.enableVerboseLogging === "boolean") {
+		normalized.enableVerboseLogging = settings.enableVerboseLogging;
 	}
 
 	return normalized;
@@ -169,6 +175,20 @@ export class ObakSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.showDetailedErrorNotices)
 					.onChange(async (value) => {
 						this.plugin.settings.showDetailedErrorNotices = value;
+						await this.plugin.savePluginData();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Verbose console logging")
+			.setDesc(
+				"Print detailed sync and file-tracking logs to the developer console.",
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.enableVerboseLogging)
+					.onChange(async (value) => {
+						this.plugin.settings.enableVerboseLogging = value;
 						await this.plugin.savePluginData();
 					}),
 			);

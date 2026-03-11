@@ -1,6 +1,7 @@
 import { Plugin } from "obsidian";
 import { registerCommands } from "./commands";
 import { IndexStore } from "./index-store";
+import { logVerbose } from "./logger";
 import { registerObsidianEventHandlers } from "./obsidian-events";
 import {
 	DEFAULT_SETTINGS,
@@ -24,13 +25,22 @@ export default class ObakPlugin extends Plugin {
 		const data = (await this.loadData()) as StoredPluginData | null;
 		this.settings = loadSettings(data?.settings);
 		this.indexStore = new IndexStore(data?.index);
+		const snapshot = this.indexStore.getSnapshot();
+
+		logVerbose(this, "Loaded plugin state.", {
+			trackedFiles: Object.keys(snapshot.uidsByFile).length,
+			trackedCards: Object.keys(snapshot.cardsByUid).length,
+			pendingDeletes: snapshot.pendingDeleteNoteIds.length,
+		});
 
 		this.addSettingTab(new ObakSettingTab(this.app, this));
 		registerCommands(this);
 		registerObsidianEventHandlers(this);
 
 		if (this.settings.reconcileOnStartup) {
-			await reconcileMissingFiles(this);
+			logVerbose(this, "Running startup reconcile for missing files.");
+			const result = await reconcileMissingFiles(this);
+			logVerbose(this, "Startup reconcile finished.", result);
 		}
 	}
 
