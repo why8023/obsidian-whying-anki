@@ -226,7 +226,7 @@ export class ObakSettingTab extends PluginSettingTab {
 			)
 			.addText((text) =>
 				text
-					.setPlaceholder("D:\\AnkiBackups")
+					.setPlaceholder("Path to backup folder or .apkg file")
 					.setValue(this.plugin.settings.backupBeforeBulkDeleteExportPath)
 					.onChange(async (value) => {
 						this.plugin.settings.backupBeforeBulkDeleteExportPath = value.trim();

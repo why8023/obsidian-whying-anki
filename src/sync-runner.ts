@@ -90,6 +90,17 @@ interface UidConflictFilterResult {
 
 // 只要影响“哪些文件需要重新扫描”的配置发生变化，就要递增这个版本。
 const SCAN_CONFIG_SIGNATURE_VERSION = 2;
+const INVALID_BACKUP_FILE_NAME_CHARACTERS = new Set([
+	"<",
+	">",
+	":",
+	"\"",
+	"/",
+	"\\",
+	"|",
+	"?",
+	"*",
+]);
 
 /**
  * 只校验当前文件的卡片语法，不改动文件、不访问 Anki。
@@ -1303,13 +1314,38 @@ function padTimestampPart(value: number): string {
 }
 
 function sanitizeBackupFileName(value: string): string {
-	const sanitized = value
-		.trim()
-		.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+	const sanitized = replaceInvalidBackupFileNameCharacters(value.trim())
 		.replace(/\s+/g, "-")
 		.replace(/[. ]+$/g, "");
 
 	return sanitized || "obak-backup";
+}
+
+function replaceInvalidBackupFileNameCharacters(value: string): string {
+	let sanitized = "";
+	let inInvalidSequence = false;
+
+	for (const char of value) {
+		if (isInvalidBackupFileNameCharacter(char)) {
+			if (!inInvalidSequence) {
+				sanitized += "-";
+				inInvalidSequence = true;
+			}
+			continue;
+		}
+
+		sanitized += char;
+		inInvalidSequence = false;
+	}
+
+	return sanitized;
+}
+
+function isInvalidBackupFileNameCharacter(char: string): boolean {
+	return (
+		INVALID_BACKUP_FILE_NAME_CHARACTERS.has(char) ||
+		char.charCodeAt(0) < 0x20
+	);
 }
 
 function buildScanConfigSignature(settings: ObakSettings): string {

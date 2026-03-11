@@ -21,11 +21,11 @@ export function logVerbose(
 	}
 
 	if (details === undefined) {
-		console.info(LOG_PREFIX, message);
+		console.debug(LOG_PREFIX, message);
 		return;
 	}
 
-	console.info(LOG_PREFIX, message, details);
+	console.debug(LOG_PREFIX, message, details);
 }
 
 /**
