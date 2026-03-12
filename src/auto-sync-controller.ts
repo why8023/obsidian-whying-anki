@@ -169,7 +169,8 @@ export class AutoSyncController {
 		return (
 			this.plugin.getDirtyFilePaths().length > 0 ||
 			this.plugin.indexStore.getDeletedFilePaths().length > 0 ||
-			this.plugin.indexStore.getPendingDeleteNoteIds().length > 0
+			this.plugin.indexStore.getPendingDeleteNoteIds().length > 0 ||
+			this.plugin.indexStore.getPendingSyncFilePaths().length > 0
 		);
 	}
 

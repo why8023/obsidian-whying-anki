@@ -64,7 +64,6 @@ export async function scanMarkdownFile(
 
 		return {
 			...card,
-			uid: card.endMeta.uid,
 			noteId: card.endMeta.noteId,
 			rev: card.endMeta.rev,
 			fileMtime: file.stat.mtime,

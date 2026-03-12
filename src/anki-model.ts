@@ -3,7 +3,7 @@ export const OBAK_MODEL_NAME = "OBAK Basic";
 
 // 字段顺序必须稳定；Anki 模型一旦创建，字段顺序变化会破坏兼容性。
 export const OBAK_MODEL_FIELDS = [
-	"ObsidianUid",
+	"ObakSyncId",
 	"AnkiDeck",
 	"AnkiTags",
 	"AnkiNoteId",
@@ -21,6 +21,7 @@ export type ObakModelFieldName =
  * 生成 Anki 字段值时所需的原始输入。
  */
 export interface ObakFieldInput {
+	obakSyncId: string;
 	ankiDeck: string;
 	ankiNoteId: string | null;
 	ankiTags: string[];
@@ -28,7 +29,6 @@ export interface ObakFieldInput {
 	front: string;
 	obsidianPath: string;
 	obsidianRev: string | null;
-	obsidianUid: string;
 	obsidianUri: string;
 }
 
@@ -228,7 +228,7 @@ export function buildObakFields(
 	input: ObakFieldInput,
 ): Record<ObakModelFieldName, string> {
 	return {
-		ObsidianUid: input.obsidianUid.trim(),
+		ObakSyncId: input.obakSyncId.trim(),
 		AnkiDeck: input.ankiDeck.trim(),
 		AnkiTags: formatAnkiTagField(input.ankiTags),
 		AnkiNoteId: input.ankiNoteId?.trim() ?? "",

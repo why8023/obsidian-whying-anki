@@ -21,7 +21,7 @@ const PERIODIC_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
 export default class ObakPlugin extends Plugin {
 	// 持久化设置；加载失败时会退回到默认值。
 	settings: ObakSettings = DEFAULT_SETTINGS;
-	// 卡片索引的内存封装，用来追踪 UID、文件路径和已同步的 Anki noteId。
+	// 卡片索引的内存封装，用来追踪已同步的 noteId、文件路径和删除/重试状态。
 	indexStore = new IndexStore();
 	// 记录被认为“需要重新扫描/同步”的 Markdown 文件。
 	private dirtyFilePaths = new Set<string>();
@@ -46,9 +46,10 @@ export default class ObakPlugin extends Plugin {
 		const snapshot = this.indexStore.getSnapshot();
 
 		logVerbose(this, "Loaded plugin state.", {
-			trackedFiles: Object.keys(snapshot.uidsByFile).length,
-			trackedCards: Object.keys(snapshot.cardsByUid).length,
+			trackedFiles: Object.keys(snapshot.noteIdsByFile).length,
+			trackedCards: Object.keys(snapshot.cardsByNoteId).length,
 			pendingDeletes: snapshot.pendingDeleteNoteIds.length,
+			pendingSyncFiles: snapshot.pendingSyncFilePaths.length,
 		});
 
 		this.addSettingTab(new ObakSettingTab(this.app, this));

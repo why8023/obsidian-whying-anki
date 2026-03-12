@@ -1,100 +1,66 @@
 import { basename, dirname, extname, join } from "path";
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
-import {
-	OBAK_MODEL_NAME,
-	type ObakNoteInput,
-} from "./anki-model";
+import { OBAK_MODEL_NAME } from "./anki-model";
 import { createEmptyPluginIndex, IndexStore } from "./index-store";
 import { logVerbose } from "./logger";
-import { computeCardRevision, generateCardUid } from "./normalize";
+import { computeCardRevision } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
 import type { ObakSettings } from "./settings";
-import { parseCardsFromMarkdown, serializeCardEnd } from "./syntax";
+import { serializeCardEnd } from "./syntax";
 import type {
-	CardIndexRecord,
 	LocalRefreshResult,
 	ParsedCard,
 	PluginIndex,
 	ScannedFile,
-	SyncToAnkiResult,
-	ObakPluginApi,
 	SyncExecutionOptions,
 	SyncProgressUpdate,
+	SyncToAnkiResult,
+	ObakPluginApi,
 } from "./types";
 
-// 一次文件重写操作：把原文某个区间替换成新的 `card-end` 标记。
 interface CardRewrite {
 	startOffset: number;
 	endOffset: number;
 	replacement: string;
 }
 
-// 准备阶段会同时保留“原卡片”和“归一化后准备用于同步的卡片”，便于比较与回写。
 interface PreparedCardState {
 	originalCard: ParsedCard;
 	finalCard: ParsedCard;
-	previousSyncedRev: string | null;
+	computedRev: string;
 	needsRetry: boolean;
 }
 
-// 单文件在进入同步前的准备结果。
 interface PreparedScannedFile {
 	scannedFile: ScannedFile;
 	cards: PreparedCardState[];
-	deletedUids: string[];
+	deletedNoteIds: string[];
 }
 
-// 进入真正同步阶段前，还会记录文件是否因为补 UID 而被提前重写过。
-interface PreparedSyncFile extends PreparedScannedFile {
-	fileRewritten: boolean;
-}
-
-// 增量同步的文件选择结果。
 interface IncrementalSyncSelection {
 	files: TFile[];
 	scanConfigSignature: string;
 	staleDirtyPaths: string[];
 }
 
-// 启动或同步前对账缺失文件后的结果。
 interface MissingFileReconcileResult {
 	missingFilePaths: string[];
 	removedUnsyncedCards: number;
 	deferred: boolean;
 }
 
-// 同步开始前，把文件级 tombstone 拆成“已恢复，需要扫描”和“仍然缺失，需要核实删除”两类。
 interface DeletedFileSyncSelection {
 	files: TFile[];
 	missingFilePaths: string[];
 	restoredFilePaths: string[];
 }
 
-// 待创建新笔记的候选卡片，同时带上它在 Anki 中是否已存在对应 note。
-interface PendingCreateCandidate {
-	existingNote: AnkiNoteInfo | null;
-	state: PreparedCardState;
-}
-
-// 通过 UID 尝试恢复 noteId 的结果。
-interface UidRecoveryResult {
-	blockedCardKeys: Set<string>;
-	recoveredNoteIds: string[];
-}
-
-// 扫描期间对 UID 冲突做过滤后的结果。
-interface UidConflictFilterResult {
+interface NoteIdConflictFilterResult {
 	conflictMessages: string[];
 	safeScannedFiles: ScannedFile[];
 }
 
-interface VaultUidPresence {
-	filePath: string;
-	startLine: number | null;
-}
-
-// 只要影响“哪些文件需要重新扫描”的配置发生变化，就要递增这个版本。
 const SCAN_CONFIG_SIGNATURE_VERSION = 2;
 const INVALID_BACKUP_FILE_NAME_CHARACTERS = new Set([
 	"<",
@@ -108,9 +74,6 @@ const INVALID_BACKUP_FILE_NAME_CHARACTERS = new Set([
 	"*",
 ]);
 
-/**
- * 只校验当前文件的卡片语法，不改动文件、不访问 Anki。
- */
 export async function validateMarkdownFile(
 	plugin: ObakPluginApi,
 	file: TFile,
@@ -118,23 +81,13 @@ export async function validateMarkdownFile(
 	return scanMarkdownFile(plugin.app, file, plugin.settings);
 }
 
-/**
- * 把索引中记录但 vault 中已经不存在的文件处理掉。
- *
- * 职责包括：
- * 1. 标记缺失文件
- * 2. 为已同步卡片排队删除对应 Anki 笔记
- * 3. 直接清理从未同步过的本地卡片索引
- */
 export async function reconcileMissingFiles(
 	plugin: ObakPluginApi,
 ): Promise<MissingFileReconcileResult> {
 	const snapshot = plugin.indexStore.getSnapshot();
 	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
-	const trackedPaths = Object.keys(snapshot.uidsByFile);
-	const missingFilePaths = trackedPaths.filter(
-		(filePath) => !currentPaths.has(filePath),
-	);
+	const trackedPaths = Object.keys(snapshot.noteIdsByFile);
+	const missingFilePaths = trackedPaths.filter((filePath) => !currentPaths.has(filePath));
 	let changed = false;
 
 	logVerbose(plugin, "Reconciling missing files.", {
@@ -144,14 +97,9 @@ export async function reconcileMissingFiles(
 	});
 
 	if (trackedPaths.length > 0 && currentPaths.size === 0) {
-		// 启动早期 vault 文件列表可能暂时为空；此时若直接对账会误判整库已删除。
 		logVerbose(
 			plugin,
 			"Deferred reconcile because tracked files exist but the vault markdown file list is still empty.",
-			{
-				trackedFiles: trackedPaths.length,
-				currentFiles: currentPaths.size,
-			},
 		);
 		return {
 			missingFilePaths: [],
@@ -160,59 +108,37 @@ export async function reconcileMissingFiles(
 		};
 	}
 
-	// 审计只负责发现缺失文件并写入 tombstone，不在这里立刻下钻到 note 级删除。
 	for (const filePath of missingFilePaths) {
 		changed = plugin.indexStore.markFileDeleted(filePath) || changed;
 	}
 
 	plugin.indexStore.setLastFullReconcileAt(Date.now());
-
 	if (changed) {
 		await plugin.savePluginData();
 	}
 
-	const result = {
+	return {
 		missingFilePaths,
 		removedUnsyncedCards: 0,
 		deferred: false,
 	};
-	logVerbose(plugin, "Finished reconciling missing files.", result);
-	return result;
 }
 
-/**
- * 只刷新本地卡片元数据：
- * - 补 UID
- * - 计算 rev
- * - 继承已知 noteId
- * - 回写 `card-end`
- * - 更新本地索引
- */
 export async function refreshLocalMetadataForFiles(
 	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
 ): Promise<LocalRefreshResult> {
-	logVerbose(plugin, "Refreshing local metadata.", {
-		fileCount: files.length,
-		filePaths: files.map((file) => file.path),
-	});
 	const indexSnapshot = plugin.indexStore.getSnapshot();
-	const scannedFiles = await filterScannedFilesWithUidConflicts(
+	const scannedFiles = await filterScannedFilesWithNoteIdConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
 	);
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
-	logVerbose(plugin, "Scanned files for local metadata refresh.", {
-		safeFiles: scannedFiles.safeScannedFiles.length,
-		conflicts: scannedFiles.conflictMessages.length,
-	});
-
 	result.runtimeErrors.push(...scannedFiles.conflictMessages);
 
 	for (const scannedFile of scannedFiles.safeScannedFiles) {
-		// 即便某个文件有解析错误，也会统计进去；只是最终行为会受错误影响。
 		result.filesProcessed += 1;
 		result.cardsProcessed += scannedFile.cards.length;
 		result.parseErrors.push(...scannedFile.errors);
@@ -227,46 +153,37 @@ export async function refreshLocalMetadataForFiles(
 		);
 		if (!rewritten && rewrites.length > 0) {
 			plugin.markFileDirty(scannedFile.file.path);
+			plugin.indexStore.markFilePendingSync(scannedFile.file.path);
 			continue;
 		}
 
 		if (rewritten) {
 			result.filesRewritten += 1;
 		}
-		logVerbose(plugin, `Prepared refreshed metadata for ${scannedFile.file.path}.`, {
-			cards: prepared.cards.length,
-			rewritten,
-			parseErrors: scannedFile.errors.length,
-		});
 
 		plugin.indexStore.setFileCards(
 			scannedFile.file.path,
 			prepared.cards.map((card) => card.finalCard),
-			{
-				preserveUnseen: true,
-				preserveSyncedRev: true,
-			},
+			{ preserveUnseen: true },
 		);
-		cleanFilePaths.push(scannedFile.file.path);
+		syncFilePendingState(plugin, scannedFile.file.path, hasUnsyncedCards(prepared.cards));
+		if (!hasUnsyncedCards(prepared.cards)) {
+			cleanFilePaths.push(scannedFile.file.path);
+		}
 	}
 
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
-	logVerbose(plugin, "Finished refreshing local metadata.", result);
 	return result;
 }
 
-/**
- * 全量重建同步索引。
- * 适合索引损坏、配置变化较大，或需要重新从 vault 现状推导状态时使用。
- */
 export async function rebuildSyncIndex(
 	plugin: Plugin & ObakPluginApi,
 ): Promise<LocalRefreshResult> {
 	const files = plugin.app.vault.getMarkdownFiles();
 	const currentFilePaths = new Set(files.map((file) => file.path));
 	const indexSnapshot = plugin.indexStore.getSnapshot();
-	const scannedFiles = await filterScannedFilesWithUidConflicts(
+	const scannedFiles = await filterScannedFilesWithNoteIdConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, files, plugin.settings),
 		indexSnapshot,
@@ -275,18 +192,11 @@ export async function rebuildSyncIndex(
 	const result = createLocalResult();
 	const cleanFilePaths: string[] = [];
 
-	logVerbose(plugin, "Rebuilding sync index from vault files.", {
-		fileCount: files.length,
-	});
-
 	if (scannedFiles.conflictMessages.length > 0) {
 		result.runtimeErrors.push(...scannedFiles.conflictMessages);
 		result.runtimeErrors.push(
-			"Rebuild aborted because duplicate card UID conflicts must be resolved first.",
+			"Rebuild aborted because duplicate card id conflicts must be resolved first.",
 		);
-		logVerbose(plugin, "Rebuild aborted due to duplicate UID conflicts.", {
-			conflicts: scannedFiles.conflictMessages.length,
-		});
 		return result;
 	}
 
@@ -305,24 +215,23 @@ export async function rebuildSyncIndex(
 		);
 		if (!rewritten && rewrites.length > 0) {
 			plugin.markFileDirty(scannedFile.file.path);
+			rebuiltStore.markFilePendingSync(scannedFile.file.path);
 			continue;
 		}
 
 		if (rewritten) {
 			result.filesRewritten += 1;
 		}
-		logVerbose(plugin, `Rebuilt index entry for ${scannedFile.file.path}.`, {
-			cards: prepared.cards.length,
-			rewritten,
-			parseErrors: scannedFile.errors.length,
-		});
 
 		rebuiltStore.setFileCards(
 			scannedFile.file.path,
 			prepared.cards.map((card) => card.finalCard),
-			{ preserveSyncedRev: true },
 		);
-		cleanFilePaths.push(scannedFile.file.path);
+		if (hasUnsyncedCards(prepared.cards)) {
+			rebuiltStore.markFilePendingSync(scannedFile.file.path);
+		} else {
+			cleanFilePaths.push(scannedFile.file.path);
+		}
 	}
 
 	const nextIndex = rebuiltStore.getSnapshot();
@@ -333,18 +242,13 @@ export async function rebuildSyncIndex(
 	plugin.indexStore.replace(nextIndex);
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
-	logVerbose(plugin, "Finished rebuilding sync index.", result);
 	return result;
 }
 
-/**
- * 对整库执行完整同步。
- */
 export async function syncCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
-	logVerbose(plugin, "Running full sync workflow.");
 	if (shouldDeferSyncUntilVaultReady(plugin)) {
 		return createVaultLoadingDeferredResult(plugin, "full sync");
 	}
@@ -359,23 +263,16 @@ export async function syncCardsToAnki(
 		plugin.app.vault.getMarkdownFiles(),
 		buildScanConfigSignature(plugin.settings),
 		true,
+		true,
 		options,
 	);
 }
 
-/**
- * 只同步最近变动过的文件。
- * 如果存在待删 note、从未同步过，或扫描配置发生变化，则会自动退化为全量扫描。
- */
-/**
- * Sync a single markdown file without advancing the global incremental sync cursor.
- */
 export async function syncMarkdownFileToAnki(
 	plugin: Plugin & ObakPluginApi,
 	file: TFile,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
-	logVerbose(plugin, `Running single-file sync workflow for ${file.path}.`);
 	if (shouldDeferSyncUntilVaultReady(plugin)) {
 		return createVaultLoadingDeferredResult(plugin, "single-file sync", {
 			filePath: file.path,
@@ -392,20 +289,15 @@ export async function syncMarkdownFileToAnki(
 		[file],
 		buildScanConfigSignature(plugin.settings),
 		false,
+		false,
 		options,
 	);
 }
 
-/**
- * Only sync recently changed files.
- * Falls back to a full scan when nothing has been synced yet
- * or scan-affecting settings changed.
- */
 export async function syncChangedCardsToAnki(
 	plugin: Plugin & ObakPluginApi,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
-	logVerbose(plugin, "Running incremental sync workflow.");
 	if (shouldDeferSyncUntilVaultReady(plugin)) {
 		return createVaultLoadingDeferredResult(plugin, "incremental sync");
 	}
@@ -419,20 +311,14 @@ export async function syncChangedCardsToAnki(
 		plugin,
 		plugin.indexStore.getSnapshot(),
 	);
-	logVerbose(plugin, "Selected files for incremental sync.", {
-		fileCount: selection.files.length,
-		filePaths: selection.files.map((file) => file.path),
-		staleDirtyPaths: selection.staleDirtyPaths,
-		scanConfigSignature: selection.scanConfigSignature,
-	});
 	plugin.clearFilesDirty(selection.staleDirtyPaths);
 
 	if (
 		selection.files.length === 0 &&
 		plugin.indexStore.getPendingDeleteNoteIds().length === 0 &&
-		plugin.indexStore.getDeletedFilePaths().length === 0
+		plugin.indexStore.getDeletedFilePaths().length === 0 &&
+		plugin.indexStore.getPendingSyncFilePaths().length === 0
 	) {
-		logVerbose(plugin, "Incremental sync found no pending work.");
 		plugin.indexStore.setLastSyncAt(Date.now());
 		plugin.indexStore.setLastScanConfigHash(selection.scanConfigSignature);
 		await plugin.savePluginData();
@@ -444,6 +330,7 @@ export async function syncChangedCardsToAnki(
 		selection.files,
 		selection.scanConfigSignature,
 		true,
+		false,
 		options,
 	);
 }
@@ -452,33 +339,15 @@ async function syncCardsToAnkiForFiles(
 	plugin: Plugin & ObakPluginApi,
 	files: TFile[],
 	scanConfigSignature: string,
-	advanceSyncCursor = false,
+	advanceSyncCursor: boolean,
+	fullVaultComparison: boolean,
 	options?: SyncExecutionOptions,
 ): Promise<SyncToAnkiResult> {
 	const indexSnapshot = plugin.indexStore.getSnapshot();
 	const deletedFileSelection = resolveDeletedFilesForSync(plugin, files, indexSnapshot);
 	const filesToScan = deletedFileSelection.files;
-
-	// 这是完整同步流程的核心：
-	// 1. 扫描文件
-	// 2. 连接并准备 Anki
-	// 3. 预处理 UID / noteId / deck / 重复项
-	// 4. 删除失效笔记
-	// 5. 逐卡创建或更新
-	// 6. 回写文件与索引
-	logVerbose(plugin, "Starting sync for selected files.", {
-		fileCount: filesToScan.length,
-		filePaths: filesToScan.map((file) => file.path),
-		advanceSyncCursor,
-		missingDeletedFiles: deletedFileSelection.missingFilePaths.length,
-		restoredDeletedFiles: deletedFileSelection.restoredFilePaths,
-	});
-	reportSyncProgress(options, {
-		message: "Scanning markdown files...",
-		completed: 0,
-		total: null,
-	});
 	const queuedDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
+
 	if (
 		filesToScan.length === 0 &&
 		queuedDeleteIds.length === 0 &&
@@ -490,16 +359,23 @@ async function syncCardsToAnkiForFiles(
 			await plugin.savePluginData();
 		}
 
-		logVerbose(plugin, "Skipped sync workflow because there was no remaining file or delete work.");
 		return createSyncResult();
 	}
 
-	const scannedFiles = await filterScannedFilesWithUidConflicts(
+	reportSyncProgress(options, {
+		message: "Scanning markdown files...",
+		completed: 0,
+		total: null,
+	});
+
+	const scannedFiles = await filterScannedFilesWithNoteIdConflicts(
 		plugin,
 		await scanMarkdownFiles(plugin.app, filesToScan, plugin.settings),
 		indexSnapshot,
 	);
 	const result = createSyncResult();
+	result.runtimeErrors.push(...scannedFiles.conflictMessages);
+
 	const client = new AnkiClient(plugin.settings);
 	const cleanFilePaths: string[] = [];
 	const totalCardsToSync = scannedFiles.safeScannedFiles.reduce(
@@ -509,16 +385,6 @@ async function syncCardsToAnkiForFiles(
 	const totalProgressSteps = 5 + totalCardsToSync;
 	let completedProgressSteps = 1;
 
-	logVerbose(plugin, "Completed markdown scan for sync.", {
-		safeFiles: scannedFiles.safeScannedFiles.length,
-		conflicts: scannedFiles.conflictMessages.length,
-		totalCardsToSync,
-	});
-
-	for (const message of scannedFiles.conflictMessages) {
-		result.runtimeErrors.push(message);
-	}
-
 	reportSyncProgress(options, {
 		message: `Scanned ${scannedFiles.safeScannedFiles.length} file(s) for sync.`,
 		completed: completedProgressSteps,
@@ -526,9 +392,7 @@ async function syncCardsToAnkiForFiles(
 	});
 
 	try {
-		// 只有在确认 AnkiConnect 可用且模型结构正确后，才继续真正同步。
 		await client.ensureReadyForSync();
-		logVerbose(plugin, "Anki client is ready for sync.");
 		completedProgressSteps += 1;
 		reportSyncProgress(options, {
 			message: "Connected to Anki and verified the Obak model.",
@@ -537,26 +401,23 @@ async function syncCardsToAnkiForFiles(
 		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
-		logVerbose(plugin, "Failed while preparing Anki client.", error);
 		return result;
 	}
 
-	const preparedFiles = await prepareSyncFiles(
-		plugin,
-		scannedFiles.safeScannedFiles,
-		indexSnapshot,
-		result.runtimeErrors,
+	const preparedFiles = await Promise.all(
+		scannedFiles.safeScannedFiles.map((scannedFile) =>
+			prepareScannedFile(scannedFile, indexSnapshot),
+		),
 	);
-	const activeNoteIds = collectActiveNoteIds(preparedFiles);
-
+	const initialActiveNoteIds = collectActiveNoteIds(preparedFiles);
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
+
 	try {
-		// 预先把所有可能涉及的现有 note 一次性拉下来，减少后续逐卡查询。
-		existingNotesById = await client.getNotesInfo(activeNoteIds);
-		logVerbose(plugin, "Loaded existing Anki notes for active cards.", {
-			activeNoteIds: activeNoteIds.length,
-			loadedNotes: existingNotesById.size,
-		});
+		if (fullVaultComparison) {
+			existingNotesById = await client.getNotesInfo(await client.findObakNoteIds());
+		} else {
+			existingNotesById = await client.getNotesInfo([...initialActiveNoteIds]);
+		}
 		completedProgressSteps += 1;
 		reportSyncProgress(options, {
 			message: "Loaded existing note information from Anki.",
@@ -565,86 +426,26 @@ async function syncCardsToAnkiForFiles(
 		});
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
-		logVerbose(plugin, "Failed while loading existing Anki note info.", error);
 		await plugin.savePluginData();
 		return result;
 	}
 
-	reportSyncProgress(options, {
-		message: "Preparing deck, UID, and duplicate checks...",
-		completed: completedProgressSteps,
-		total: totalProgressSteps,
-	});
+	const validExistingNotesById = new Map(
+		[...existingNotesById.entries()].filter(
+			([, note]) => note.modelName === OBAK_MODEL_NAME,
+		),
+	);
+	const invalidNoteIds = new Set(
+		[...initialActiveNoteIds].filter((noteId) => !validExistingNotesById.has(noteId)),
+	);
+	resetPreparedCardsWithInvalidIds(preparedFiles, invalidNoteIds);
 
 	try {
-		// 新卡创建前先确保目标牌组存在；失败时记录错误，但不阻断整个同步流程。
-		await client.ensureDecksExist(collectDecksForNewCards(preparedFiles));
-		logVerbose(plugin, "Ensured target decks exist for new cards.");
+		await client.ensureDecksExist(collectDecksForCards(preparedFiles));
 	} catch (error) {
 		result.runtimeErrors.push(asErrorMessage(error));
-		logVerbose(plugin, "Failed while ensuring target decks exist.", error);
 	}
 
-	const uidRecoveryResult = await recoverPreparedCardsByUid(
-		client,
-		preparedFiles,
-		existingNotesById,
-		result.runtimeErrors,
-	);
-
-	if (uidRecoveryResult.recoveredNoteIds.length > 0) {
-		// 通过 UID 找回 noteId 后，再补拉一次详情，保证后续更新阶段拿到完整 note 信息。
-		logVerbose(plugin, "Recovered Anki note IDs by Obsidian UID.", {
-			recovered: uidRecoveryResult.recoveredNoteIds.length,
-		});
-		try {
-			const recoveredNotes = await client.getNotesInfo(uidRecoveryResult.recoveredNoteIds);
-			existingNotesById = new Map([...existingNotesById, ...recoveredNotes]);
-		} catch (error) {
-			result.runtimeErrors.push(asErrorMessage(error));
-			logVerbose(plugin, "Failed while loading recovered note details.", error);
-		}
-	}
-
-	// 已恢复文件和当前扫描仍然活跃的 note 都不应继续留在待删队列里。
-	const restoredDeletedFileNoteIds = collectTrackedNoteIdsForFilePaths(
-		indexSnapshot,
-		deletedFileSelection.restoredFilePaths,
-	);
-	plugin.indexStore.dequeuePendingDelete([
-		...new Set([...activeNoteIds, ...restoredDeletedFileNoteIds]),
-	]);
-	const activeUids = collectActiveUids(preparedFiles);
-	const deletedFileCandidateUids = collectTrackedUidsForFilePaths(
-		indexSnapshot,
-		deletedFileSelection.missingFilePaths,
-	);
-	const movedDeletedUidPresences = await findUidPresencesInVault(
-		plugin,
-		[
-			...preparedFiles.flatMap((preparedFile) =>
-				preparedFile.deletedUids.filter((uid) => !activeUids.has(uid)),
-			),
-			...deletedFileCandidateUids.filter((uid) => !activeUids.has(uid)),
-		],
-	);
-	markMovedUidPresenceFilesDirty(
-		plugin,
-		movedDeletedUidPresences,
-		new Set(preparedFiles.map((preparedFile) => preparedFile.scannedFile.file.path)),
-	);
-
-	const blockedCreateCardKeys = await buildBlockedCreateCardKeys(
-		client,
-		preparedFiles,
-		existingNotesById,
-		result.runtimeErrors,
-		uidRecoveryResult.blockedCardKeys,
-	);
-	logVerbose(plugin, "Finished pre-sync validation checks.", {
-		blockedCreateCards: blockedCreateCardKeys.size,
-		uidRecoveryBlocks: uidRecoveryResult.blockedCardKeys.size,
-	});
 	completedProgressSteps += 1;
 	reportSyncProgress(options, {
 		message: "Finished pre-sync validation checks.",
@@ -652,141 +453,45 @@ async function syncCardsToAnkiForFiles(
 		total: totalProgressSteps,
 	});
 
-	const deleteNoteIds = new Set<string>();
-	const orphanDeletedUids = new Set<string>();
-	const movedDeletedUids = new Set<string>();
-	const movedDeletedNoteIds = new Set<string>();
-	const missingFileMovedUids = new Set<string>();
+	const activeNoteIds = collectActiveNoteIds(preparedFiles);
+	const restoredDeletedFileNoteIds = collectTrackedNoteIdsForFilePaths(
+		indexSnapshot,
+		deletedFileSelection.restoredFilePaths,
+	);
+	plugin.indexStore.dequeuePendingDelete([
+		...new Set([...activeNoteIds, ...restoredDeletedFileNoteIds]),
+	]);
 
-	for (const preparedFile of preparedFiles) {
-		if (preparedFile.scannedFile.errors.length > 0) {
-			// 有解析错误的文件先不参与删除推断，避免局部语法错误导致误删 Anki 笔记。
-			continue;
-		}
+	const deleteContext = await prepareDeleteContext(
+		plugin,
+		client,
+		indexSnapshot,
+		preparedFiles,
+		validExistingNotesById,
+		deletedFileSelection,
+		fullVaultComparison,
+		result,
+	);
+	const deletePhaseSucceeded = await executeDeletePhase(
+		plugin,
+		client,
+		deleteContext.confirmedDeleteIds,
+		result,
+		options,
+		completedProgressSteps,
+		totalProgressSteps,
+	);
 
-		const deletedRecords = preparedFile.deletedUids
-			.map((uid) => indexSnapshot.cardsByUid[uid])
-			.filter((record): record is NonNullable<typeof record> => record !== undefined);
-
-		for (const record of deletedRecords) {
-			if (activeUids.has(record.uid) || movedDeletedUidPresences.has(record.uid)) {
-				movedDeletedUids.add(record.uid);
-				if (record.ankiNoteId) {
-					movedDeletedNoteIds.add(record.ankiNoteId);
-				}
-				continue;
-			}
-
-			if (record.ankiNoteId) {
-				deleteNoteIds.add(record.ankiNoteId);
-			} else {
-				orphanDeletedUids.add(record.uid);
-			}
-		}
-	}
-
-	for (const filePath of deletedFileSelection.missingFilePaths) {
-		const deletedRecords = (indexSnapshot.uidsByFile[filePath] ?? [])
-			.map((uid) => indexSnapshot.cardsByUid[uid])
-			.filter((record): record is NonNullable<typeof record> => record !== undefined);
-		if (deletedRecords.length === 0) {
-			plugin.indexStore.clearDeletedFile(filePath);
-			continue;
-		}
-
-		for (const record of deletedRecords) {
-			if (activeUids.has(record.uid) || movedDeletedUidPresences.has(record.uid)) {
-				movedDeletedUids.add(record.uid);
-				missingFileMovedUids.add(record.uid);
-				if (record.ankiNoteId) {
-					movedDeletedNoteIds.add(record.ankiNoteId);
-				}
-				continue;
-			}
-
-			if (record.ankiNoteId) {
-				deleteNoteIds.add(record.ankiNoteId);
-			} else {
-				orphanDeletedUids.add(record.uid);
-			}
-		}
-	}
-
-	if (orphanDeletedUids.size > 0 || missingFileMovedUids.size > 0) {
-		// 从未同步过的卡片只需要本地清理，不需要访问 Anki。
-		plugin.indexStore.removeCardsByUids([
-			...orphanDeletedUids,
-			...missingFileMovedUids,
-		]);
-	}
-
-	if (movedDeletedNoteIds.size > 0) {
-		plugin.indexStore.dequeuePendingDelete([...movedDeletedNoteIds]);
-	}
-
-	plugin.indexStore.queuePendingDelete([...deleteNoteIds]);
-	const pendingDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
-	let deletePhaseSucceeded = pendingDeleteIds.length === 0;
-	logVerbose(plugin, "Prepared note deletions.", {
-		deleteCandidates: deleteNoteIds.size,
-		movedCandidates: movedDeletedUids.size,
-		missingDeletedFiles: deletedFileSelection.missingFilePaths.length,
-		pendingDeletes: pendingDeleteIds.length,
-		orphanDeletedUids: orphanDeletedUids.size,
-	});
-
-	if (shouldBackupBeforeBulkDelete(plugin.settings, pendingDeleteIds.length)) {
-		try {
-			const backupExportConfig = getBulkDeleteBackupExportConfig(plugin.settings);
-			reportSyncProgress(options, {
-				message: `Exporting deck "${backupExportConfig.deckName}" before deleting ${pendingDeleteIds.length} note(s)...`,
-				completed: completedProgressSteps,
-				total: totalProgressSteps,
-			});
-			await client.exportPackage(
-				backupExportConfig.deckName,
-				backupExportConfig.exportPath,
-				true,
-			);
-			logVerbose(plugin, "Exported deck before bulk delete.", {
-				deckName: backupExportConfig.deckName,
-				exportPath: backupExportConfig.exportPath,
-				pendingDeletes: pendingDeleteIds.length,
-				threshold: plugin.settings.backupBeforeBulkDeleteThreshold,
-			});
-		} catch (error) {
-			const message = `Aborted sync before deleting ${pendingDeleteIds.length} note(s): ${asErrorMessage(error)}`;
-			result.runtimeErrors.push(message);
-			logVerbose(plugin, "Failed while preparing or exporting deck before bulk delete.", error);
-			await plugin.savePluginData();
-			return result;
-		}
-	}
-
-	if (pendingDeleteIds.length > 0) {
-		reportSyncProgress(options, {
-			message: `Deleting ${pendingDeleteIds.length} note(s) removed from the vault...`,
-			completed: completedProgressSteps,
-			total: totalProgressSteps,
-		});
-		try {
-			await client.deleteNotes(pendingDeleteIds);
-			plugin.indexStore.removeCardsByNoteIds(pendingDeleteIds);
-			result.cardsDeleted += pendingDeleteIds.length;
-			deletePhaseSucceeded = true;
-			logVerbose(plugin, "Deleted notes removed from the vault.", {
-				deletedNotes: pendingDeleteIds.length,
-			});
-		} catch (error) {
-			result.runtimeErrors.push(asErrorMessage(error));
-			logVerbose(plugin, "Failed while deleting notes in Anki.", error);
+	if (deletePhaseSucceeded) {
+		for (const filePath of deletedFileSelection.missingFilePaths) {
+			plugin.indexStore.removeFileTracking(filePath);
 		}
 	}
 
 	completedProgressSteps += 1;
 	reportSyncProgress(options, {
 		message:
-			pendingDeleteIds.length > 0
+			deleteContext.confirmedDeleteIds.length > 0
 				? "Finished processing deleted notes."
 				: "No deleted notes needed processing.",
 		completed: completedProgressSteps,
@@ -802,18 +507,11 @@ async function syncCardsToAnkiForFiles(
 
 		const syncedStates: PreparedCardState[] = [];
 		for (const state of preparedFile.cards) {
-			// 逐卡决定是跳过、创建还是更新，并同步回最新 noteId/rev。
+			const existingNote = state.finalCard.noteId
+				? validExistingNotesById.get(state.finalCard.noteId) ?? null
+				: null;
 			syncedStates.push(
-				await syncPreparedCard(
-					plugin,
-					client,
-					state,
-					state.finalCard.noteId
-						? existingNotesById.get(state.finalCard.noteId) ?? null
-						: null,
-					result,
-					!blockedCreateCardKeys.has(getCardLocationKey(state.finalCard)),
-				),
+				await syncPreparedCard(plugin, client, state, existingNote, result),
 			);
 			processedCards += 1;
 			reportSyncProgress(options, {
@@ -831,35 +529,30 @@ async function syncCardsToAnkiForFiles(
 			result.runtimeErrors,
 		);
 		const rewriteRequired = rewrites.length > 0;
-		const fileNeedsRetry = syncedStates.some((state) => state.needsRetry);
+		const fileNeedsRetry =
+			scannedFile.errors.length > 0 ||
+			syncedStates.some((state) => state.needsRetry) ||
+			syncedStates.some((state) => !state.finalCard.noteId) ||
+			(rewriteRequired && !rewritten);
 
-		if (preparedFile.fileRewritten || rewritten) {
+		if (rewritten) {
 			result.filesRewritten += 1;
 		}
-		logVerbose(plugin, `Finished syncing file ${scannedFile.file.path}.`, {
-			cards: preparedFile.cards.length,
-			parseErrors: scannedFile.errors.length,
-			fileRewritten: preparedFile.fileRewritten,
-			endMarkerRewritten: rewritten,
-			needsRetry: fileNeedsRetry,
-		});
 
 		plugin.indexStore.setFileCards(
 			scannedFile.file.path,
 			syncedStates.map((state) => state.finalCard),
 			{
-				// 删除阶段失败或文件存在解析错误时，不应贸然删除索引里“这次没扫描到”的旧卡。
 				preserveUnseen:
 					!deletePhaseSucceeded || scannedFile.errors.length > 0,
 			},
 		);
+		syncFilePendingState(plugin, scannedFile.file.path, fileNeedsRetry);
 
 		if (fileNeedsRetry) {
 			plugin.markFileDirty(scannedFile.file.path);
-		} else if (!rewriteRequired || rewritten) {
-			cleanFilePaths.push(scannedFile.file.path);
 		} else {
-			plugin.markFileDirty(scannedFile.file.path);
+			cleanFilePaths.push(scannedFile.file.path);
 		}
 	}
 
@@ -870,7 +563,6 @@ async function syncCardsToAnkiForFiles(
 
 	await plugin.savePluginData();
 	plugin.clearFilesDirty(cleanFilePaths);
-	logVerbose(plugin, "Finished sync workflow.", result);
 	reportSyncProgress(options, {
 		message: `Finished syncing ${result.cardsProcessed} card(s).`,
 		completed: totalProgressSteps,
@@ -880,7 +572,6 @@ async function syncCardsToAnkiForFiles(
 }
 
 function createLocalResult(): LocalRefreshResult {
-	// 统一结果初始化，减少各流程手写重复字段。
 	return {
 		filesProcessed: 0,
 		filesRewritten: 0,
@@ -900,8 +591,129 @@ function createSyncResult(): SyncToAnkiResult {
 	};
 }
 
+async function prepareDeleteContext(
+	plugin: ObakPluginApi,
+	client: AnkiClient,
+	indexSnapshot: PluginIndex,
+	preparedFiles: PreparedScannedFile[],
+	validExistingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
+	deletedFileSelection: DeletedFileSyncSelection,
+	fullVaultComparison: boolean,
+	result: SyncToAnkiResult,
+): Promise<{ confirmedDeleteIds: string[] }> {
+	const activeNoteIds = collectActiveNoteIds(preparedFiles);
+	const deleteNoteIds = new Set<string>(plugin.indexStore.getPendingDeleteNoteIds());
+	const trackedDeletedNoteIds = collectTrackedNoteIdsForFilePaths(
+		indexSnapshot,
+		deletedFileSelection.missingFilePaths,
+	);
+
+	for (const noteId of trackedDeletedNoteIds) {
+		if (!activeNoteIds.has(noteId)) {
+			deleteNoteIds.add(noteId);
+		}
+	}
+
+	for (const preparedFile of preparedFiles) {
+		if (preparedFile.scannedFile.errors.length > 0) {
+			continue;
+		}
+
+		for (const noteId of preparedFile.deletedNoteIds) {
+			if (!activeNoteIds.has(noteId)) {
+				deleteNoteIds.add(noteId);
+			}
+		}
+	}
+
+	if (fullVaultComparison) {
+		for (const noteId of validExistingNotesById.keys()) {
+			if (!activeNoteIds.has(noteId)) {
+				deleteNoteIds.add(noteId);
+			}
+		}
+	}
+
+	plugin.indexStore.queuePendingDelete([...deleteNoteIds]);
+	const pendingDeleteIds = plugin.indexStore.getPendingDeleteNoteIds();
+	if (pendingDeleteIds.length === 0) {
+		return { confirmedDeleteIds: [] };
+	}
+
+	try {
+		const existingDeleteNotes = await client.getNotesInfo(pendingDeleteIds);
+		const missingDeleteIds = pendingDeleteIds.filter(
+			(noteId) => !existingDeleteNotes.has(noteId),
+		);
+		if (missingDeleteIds.length > 0) {
+			plugin.indexStore.removeCardsByNoteIds(missingDeleteIds);
+		}
+
+		return {
+			confirmedDeleteIds: pendingDeleteIds.filter((noteId) =>
+				existingDeleteNotes.has(noteId),
+			),
+		};
+	} catch (error) {
+		result.runtimeErrors.push(`Failed to verify notes pending deletion: ${asErrorMessage(error)}`);
+		return {
+			confirmedDeleteIds: pendingDeleteIds,
+		};
+	}
+}
+
+async function executeDeletePhase(
+	plugin: ObakPluginApi,
+	client: AnkiClient,
+	confirmedDeleteIds: string[],
+	result: SyncToAnkiResult,
+	options: SyncExecutionOptions | undefined,
+	completedProgressSteps: number,
+	totalProgressSteps: number,
+): Promise<boolean> {
+	if (confirmedDeleteIds.length === 0) {
+		return true;
+	}
+
+	if (shouldBackupBeforeBulkDelete(plugin.settings, confirmedDeleteIds.length)) {
+		try {
+			const backupExportConfig = getBulkDeleteBackupExportConfig(plugin.settings);
+			reportSyncProgress(options, {
+				message: `Exporting deck "${backupExportConfig.deckName}" before deleting ${confirmedDeleteIds.length} note(s)...`,
+				completed: completedProgressSteps,
+				total: totalProgressSteps,
+			});
+			await client.exportPackage(
+				backupExportConfig.deckName,
+				backupExportConfig.exportPath,
+				true,
+			);
+		} catch (error) {
+			result.runtimeErrors.push(
+				`Aborted sync before deleting ${confirmedDeleteIds.length} note(s): ${asErrorMessage(error)}`,
+			);
+			return false;
+		}
+	}
+
+	reportSyncProgress(options, {
+		message: `Deleting ${confirmedDeleteIds.length} note(s) removed from the vault...`,
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
+	try {
+		await client.deleteNotes(confirmedDeleteIds);
+		plugin.indexStore.removeCardsByNoteIds(confirmedDeleteIds);
+		result.cardsDeleted += confirmedDeleteIds.length;
+		return true;
+	} catch (error) {
+		result.runtimeErrors.push(asErrorMessage(error));
+		return false;
+	}
+}
+
 function shouldDeferSyncUntilVaultReady(plugin: ObakPluginApi): boolean {
-	const trackedFiles = Object.keys(plugin.indexStore.getSnapshot().uidsByFile).length;
+	const trackedFiles = Object.keys(plugin.indexStore.getSnapshot().noteIdsByFile).length;
 	const currentFiles = plugin.app.vault.getMarkdownFiles().length;
 	return trackedFiles > 0 && currentFiles === 0;
 }
@@ -927,13 +739,9 @@ async function prepareScannedFile(
 	scannedFile: ScannedFile,
 	indexSnapshot: PluginIndex,
 ): Promise<PreparedScannedFile> {
-	// 这一阶段的目标是：为每张卡补出稳定 UID、继承 noteId，并计算最新 rev。
 	const cards = await Promise.all(
 		scannedFile.cards.map(async (originalCard) => {
-			const existingRecord = findCardIndexRecord(indexSnapshot, originalCard.uid);
-			const resolvedNoteId = originalCard.noteId ?? existingRecord?.ankiNoteId ?? null;
-			const uid = originalCard.uid ?? generateCardUid();
-			const rev = await computeCardRevision({
+			const computedRev = await computeCardRevision({
 				effectiveDeck: originalCard.effectiveDeck,
 				effectiveTags: originalCard.effectiveTags,
 				frontNormalized: originalCard.frontNormalized,
@@ -946,108 +754,27 @@ async function prepareScannedFile(
 				originalCard,
 				finalCard: {
 					...originalCard,
-					uid,
-					noteId: resolvedNoteId,
-					rev,
+					noteId: originalCard.noteId,
+					rev: computedRev,
 				},
-				// 优先沿用索引中记录的“上次成功同步 rev”，否则退回文件里现存的 rev。
-				previousSyncedRev:
-					existingRecord?.lastSyncedRev ?? (resolvedNoteId ? originalCard.rev : null),
+				computedRev,
 				needsRetry: false,
 			};
 		}),
 	);
 
-	const oldUids = new Set(indexSnapshot.uidsByFile[scannedFile.file.path] ?? []);
-	const newUids = new Set(
+	const oldNoteIds = new Set(indexSnapshot.noteIdsByFile[scannedFile.file.path] ?? []);
+	const newNoteIds = new Set(
 		cards
-			.map((card) => card.finalCard.uid)
-			.filter((uid): uid is string => typeof uid === "string"),
+			.map((card) => card.finalCard.noteId)
+			.filter((noteId): noteId is string => Boolean(noteId)),
 	);
 
 	return {
 		scannedFile,
 		cards,
-		// 旧索引里有、这次扫描结果里没有的 UID，会在后续进入删除判定。
-		deletedUids: [...oldUids].filter((uid) => !newUids.has(uid)),
+		deletedNoteIds: [...oldNoteIds].filter((noteId) => !newNoteIds.has(noteId)),
 	};
-}
-
-async function prepareSyncFiles(
-	plugin: Plugin & ObakPluginApi,
-	scannedFiles: ScannedFile[],
-	indexSnapshot: PluginIndex,
-	runtimeErrors: string[],
-): Promise<PreparedSyncFile[]> {
-	const preparedFiles: PreparedSyncFile[] = [];
-
-	for (const scannedFile of scannedFiles) {
-		// 新卡如果还没有 UID，会先回写文件，再重新扫描一次，确保后续同步全程使用稳定 UID。
-		const preparedFile = await prepareScannedFile(scannedFile, indexSnapshot);
-		const stabilizedFile = await ensureFileHasStableUids(
-			plugin,
-			preparedFile,
-			indexSnapshot,
-			runtimeErrors,
-		);
-		if (stabilizedFile) {
-			preparedFiles.push(stabilizedFile);
-		}
-	}
-
-	return preparedFiles;
-}
-
-async function ensureFileHasStableUids(
-	plugin: ObakPluginApi,
-	preparedFile: PreparedScannedFile,
-	indexSnapshot: PluginIndex,
-	runtimeErrors: string[],
-): Promise<PreparedSyncFile | null> {
-	const uidRewrites = buildUidRewrites(preparedFile.cards);
-	if (uidRewrites.length === 0) {
-		return { ...preparedFile, fileRewritten: false };
-	}
-
-	const rewritten = await commitFileRewrites(
-		plugin,
-		preparedFile.scannedFile,
-		uidRewrites,
-		runtimeErrors,
-	);
-	if (!rewritten) {
-		plugin.markFileDirty(preparedFile.scannedFile.file.path);
-		return null;
-	}
-
-	// UID 已经写回文件后，重新扫描一次，后续逻辑全部基于最新文件内容继续。
-	const rescannedFile = await scanMarkdownFile(
-		plugin.app,
-		preparedFile.scannedFile.file,
-		plugin.settings,
-	);
-	const rescannedPreparedFile = await prepareScannedFile(rescannedFile, indexSnapshot);
-
-	return {
-		...rescannedPreparedFile,
-		fileRewritten: true,
-	};
-}
-
-function findCardIndexRecord(
-	indexSnapshot: PluginIndex,
-	uid: string | null,
-): CardIndexRecord | undefined {
-	return uid ? indexSnapshot.cardsByUid[uid] : undefined;
-}
-
-function collectDecksForNewCards(preparedFiles: PreparedScannedFile[]): string[] {
-	// 只需要为“最终落地 deck 非空”的卡片准备牌组。
-	return preparedFiles.flatMap((preparedFile) =>
-		preparedFile.cards
-			.map((state) => state.finalCard.effectiveDeck)
-			.filter(Boolean),
-	);
 }
 
 async function syncPreparedCard(
@@ -1056,187 +783,133 @@ async function syncPreparedCard(
 	state: PreparedCardState,
 	existingNote: AnkiNoteInfo | null,
 	result: SyncToAnkiResult,
-	allowCreate: boolean,
 ): Promise<PreparedCardState> {
-	// 单卡同步策略：
-	// - 没 deck：报错并跳过
-	// - 被预检查阻塞：清空 noteId/rev，等待用户修复
-	// - 没有 noteId 或 note 不存在：创建
-	// - rev 未变化：跳过更新
-	// - 其余：更新现有 note
 	const card = state.finalCard;
+	const existingRev = getAnkiStoredRev(existingNote);
 
 	if (!card.effectiveDeck) {
-		logVerbose(plugin, `Skipped card with empty deck: ${getCardLocationKey(card)}`);
 		result.runtimeErrors.push(formatCardError(card, "Card deck is empty."));
 		return {
 			...state,
-			needsRetry: false,
 			finalCard: {
 				...card,
-				rev: state.previousSyncedRev,
+				rev: existingRev ?? state.originalCard.rev,
 			},
-		};
-	}
-
-	if (!allowCreate) {
-		logVerbose(
-			plugin,
-			`Blocked card creation after preflight checks: ${getCardLocationKey(card)}`,
-		);
-		return {
-			...state,
-			needsRetry: true,
-			finalCard: {
-				...card,
-				noteId: null,
-				rev: null,
-			},
-		};
-	}
-
-	if (existingNote && existingNote.modelName !== OBAK_MODEL_NAME) {
-		logVerbose(plugin, `Skipped card with incompatible Anki model: ${getCardLocationKey(card)}`, {
-			noteId: existingNote.noteId,
-			modelName: existingNote.modelName,
-		});
-		result.runtimeErrors.push(
-			formatCardError(
-				card,
-				`Anki note ${existingNote.noteId} uses model "${existingNote.modelName}", but sync now requires "${OBAK_MODEL_NAME}". Delete the old note and sync again.`,
-			),
-		);
-		return {
-			...state,
-			needsRetry: true,
-			finalCard: {
-				...card,
-				rev: state.previousSyncedRev,
-			},
+			needsRetry: Boolean(card.noteId),
 		};
 	}
 
 	if (!card.noteId || existingNote === null) {
-		// 创建时先 addNote，再立刻 update 一次，把 `AnkiNoteId` 字段写成真实值。
-		const createInput = buildObakNoteInput(card, null);
+		const obakSyncId = generateObakSyncId();
 		try {
-			const noteId = await client.addObakNote(createInput);
-			result.cardsCreated += 1;
-			logVerbose(plugin, `Created new Anki note for ${getCardLocationKey(card)}.`, {
+			const noteId = await client.addObakNote(
+				buildObakNoteInput(card, {
+					ankiNoteId: null,
+					obakSyncId,
+					obsidianRev: state.computedRev,
+				}),
+			);
+			await client.updateObakNote(
 				noteId,
-			});
-
-			try {
-				await client.updateObakNote(noteId, buildObakNoteInput(card, noteId));
-				logVerbose(
-					plugin,
-					`Finalized Anki note fields after creation for ${getCardLocationKey(card)}.`,
-				);
-			} catch (error) {
-				result.runtimeErrors.push(
-					formatCardError(
-						card,
-						`Created note ${noteId}, but failed to finalize AnkiNoteId field: ${asErrorMessage(
-							error,
-						)}`,
-					),
-				);
-				return {
-					...state,
-					needsRetry: true,
-					finalCard: {
-						...card,
-						noteId,
-						rev: null,
-					},
-				};
-			}
-
+				buildObakNoteInput(card, {
+					ankiNoteId: noteId,
+					obakSyncId,
+					obsidianRev: state.computedRev,
+				}),
+			);
+			result.cardsCreated += 1;
 			return {
 				...state,
-				needsRetry: false,
 				finalCard: {
 					...card,
 					noteId,
+					rev: state.computedRev,
 				},
+				needsRetry: false,
 			};
 		} catch (error) {
-			result.runtimeErrors.push(
-				formatCardError(card, formatCreateNoteErrorMessage(error)),
-			);
-			logVerbose(plugin, `Failed to create Anki note for ${getCardLocationKey(card)}.`, error);
+			result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
 			return {
 				...state,
-				needsRetry: true,
 				finalCard: {
 					...card,
 					noteId: null,
 					rev: null,
 				},
+				needsRetry: true,
 			};
 		}
 	}
 
-	if (state.previousSyncedRev === card.rev) {
-		// 上次成功同步的 rev 和当前 rev 一致，说明 Anki 内容无需更新。
+	if (existingRev === state.computedRev) {
 		result.cardsUnchanged += 1;
-		logVerbose(plugin, `Card unchanged; skipped update for ${getCardLocationKey(card)}.`);
-		return state;
+		return {
+			...state,
+			finalCard: {
+				...card,
+				rev: existingRev ?? state.computedRev,
+			},
+			needsRetry: false,
+		};
 	}
 
+	const obakSyncId = existingNote.fields["ObakSyncId"]?.trim() || generateObakSyncId();
 	try {
-		// 更新字段后再同步 deck，确保卡片内容和目标位置都与当前 Markdown 一致。
 		await client.updateObakNote(
 			card.noteId,
-			buildObakNoteInput(card, card.noteId),
+			buildObakNoteInput(card, {
+				ankiNoteId: card.noteId,
+				obakSyncId,
+				obsidianRev: state.computedRev,
+			}),
 		);
 		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
-		logVerbose(plugin, `Updated existing Anki note for ${getCardLocationKey(card)}.`, {
-			noteId: card.noteId,
-		});
-		return state;
-	} catch (error) {
-		result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
-		logVerbose(plugin, `Failed to update Anki note for ${getCardLocationKey(card)}.`, error);
 		return {
 			...state,
-			needsRetry: true,
 			finalCard: {
 				...card,
-				rev: state.previousSyncedRev,
+				rev: state.computedRev,
 			},
+			needsRetry: false,
+		};
+	} catch (error) {
+		result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
+		return {
+			...state,
+			finalCard: {
+				...card,
+				rev: existingRev ?? state.originalCard.rev,
+			},
+			needsRetry: true,
 		};
 	}
 }
 
-function buildUidRewrites(cards: PreparedCardState[]): CardRewrite[] {
-	// 只为“原文件里没有 UID”的卡片生成重写操作。
-	return cards
-		.map((card) => {
-			if (card.originalCard.uid) {
-				return null;
+function resetPreparedCardsWithInvalidIds(
+	preparedFiles: PreparedScannedFile[],
+	invalidNoteIds: ReadonlySet<string>,
+): void {
+	for (const preparedFile of preparedFiles) {
+		for (const state of preparedFile.cards) {
+			const noteId = state.finalCard.noteId;
+			if (!noteId || !invalidNoteIds.has(noteId)) {
+				continue;
 			}
 
-			return {
-				startOffset: card.originalCard.endMarkerStartOffset,
-				endOffset: card.originalCard.endMarkerEndOffset,
-				replacement: serializeCardEnd({
-					uid: card.finalCard.uid,
-					noteId: card.originalCard.noteId,
-					rev: card.originalCard.rev,
-				}),
+			state.finalCard = {
+				...state.finalCard,
+				noteId: null,
+				rev: null,
 			};
-		})
-		.filter((rewrite): rewrite is CardRewrite => rewrite !== null);
+		}
+	}
 }
 
 function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
-	// 根据最终 UID/noteId/rev 生成新的 `card-end`；没变化就不回写。
 	return cards
 		.map((card) => {
 			const replacement = serializeCardEnd({
-				uid: card.finalCard.uid,
 				noteId: card.finalCard.noteId,
 				rev: card.finalCard.rev,
 			});
@@ -1252,27 +925,26 @@ function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
 		.filter((rewrite): rewrite is CardRewrite => rewrite !== null);
 }
 
-function collectActiveNoteIds(preparedFiles: PreparedSyncFile[]): string[] {
-	// 汇总所有仍然有效的 noteId，便于批量加载 note 信息或从待删队列中移除。
-	return [
-		...new Set(
-			preparedFiles.flatMap((preparedFile) =>
-				preparedFile.cards
-					.map((state) => state.finalCard.noteId)
-					.filter((noteId): noteId is string => Boolean(noteId)),
-			),
-		),
-	];
-}
-
-function collectActiveUids(preparedFiles: PreparedSyncFile[]): Set<string> {
+function collectActiveNoteIds(preparedFiles: PreparedScannedFile[]): Set<string> {
 	return new Set(
 		preparedFiles.flatMap((preparedFile) =>
 			preparedFile.cards
-				.map((state) => state.finalCard.uid?.trim() ?? "")
-				.filter(Boolean),
+				.map((state) => state.finalCard.noteId)
+				.filter((noteId): noteId is string => Boolean(noteId)),
 		),
 	);
+}
+
+function collectDecksForCards(preparedFiles: PreparedScannedFile[]): string[] {
+	return preparedFiles.flatMap((preparedFile) =>
+		preparedFile.cards
+			.map((state) => state.finalCard.effectiveDeck)
+			.filter(Boolean),
+	);
+}
+
+function hasUnsyncedCards(cards: PreparedCardState[]): boolean {
+	return cards.some((card) => !card.finalCard.noteId);
 }
 
 async function commitFileRewrites(
@@ -1288,7 +960,6 @@ async function commitFileRewrites(
 	try {
 		await plugin.app.vault.process(scannedFile.file, (current) => {
 			if (current !== scannedFile.text) {
-				// 如果文件已被用户再次修改，放弃本次重写，避免覆盖最新内容。
 				throw new Error(`File changed during rewrite: ${scannedFile.file.path}`);
 			}
 
@@ -1296,7 +967,6 @@ async function commitFileRewrites(
 			for (const rewrite of [...rewrites].sort(
 				(left, right) => right.startOffset - left.startOffset,
 			)) {
-				// 按偏移从后往前替换，避免前面的替换影响后面的区间位置。
 				rewritten =
 					rewritten.slice(0, rewrite.startOffset) +
 					rewrite.replacement +
@@ -1307,13 +977,9 @@ async function commitFileRewrites(
 			return rewritten;
 		});
 
-		logVerbose(plugin, `Rewrote card metadata in ${scannedFile.file.path}.`, {
-			rewriteCount: rewrites.length,
-		});
 		return true;
 	} catch (error) {
 		runtimeErrors.push(asErrorMessage(error));
-		logVerbose(plugin, `Failed to rewrite card metadata in ${scannedFile.file.path}.`, error);
 		return false;
 	}
 }
@@ -1331,15 +997,6 @@ function reportSyncProgress(
 	update: SyncProgressUpdate,
 ): void {
 	options?.onProgress?.(update);
-}
-
-function formatCreateNoteErrorMessage(error: unknown): string {
-	const message = asErrorMessage(error);
-	if (message.includes("cannot create note because it is a duplicate")) {
-		return "Cannot create note because ObsidianUid already exists in Anki.";
-	}
-
-	return message;
 }
 
 function shouldBackupBeforeBulkDelete(
@@ -1455,7 +1112,6 @@ function isInvalidBackupFileNameCharacter(char: string): boolean {
 }
 
 function buildScanConfigSignature(settings: ObakSettings): string {
-	// 只把影响扫描结果的配置纳入签名；配置变化后，增量同步会自动退回全量扫描。
 	return JSON.stringify({
 		version: SCAN_CONFIG_SIGNATURE_VERSION,
 		defaultDeck: settings.defaultDeck.trim(),
@@ -1496,21 +1152,6 @@ function resolveDeletedFilesForSync(
 	};
 }
 
-function collectTrackedUidsForFilePaths(
-	indexSnapshot: PluginIndex,
-	filePaths: Iterable<string>,
-): string[] {
-	const uids = new Set<string>();
-
-	for (const filePath of filePaths) {
-		for (const uid of indexSnapshot.uidsByFile[filePath] ?? []) {
-			uids.add(uid);
-		}
-	}
-
-	return [...uids];
-}
-
 function collectTrackedNoteIdsForFilePaths(
 	indexSnapshot: PluginIndex,
 	filePaths: Iterable<string>,
@@ -1518,31 +1159,12 @@ function collectTrackedNoteIdsForFilePaths(
 	const noteIds = new Set<string>();
 
 	for (const filePath of filePaths) {
-		for (const uid of indexSnapshot.uidsByFile[filePath] ?? []) {
-			const noteId = indexSnapshot.cardsByUid[uid]?.ankiNoteId;
-			if (noteId) {
-				noteIds.add(noteId);
-			}
+		for (const noteId of indexSnapshot.noteIdsByFile[filePath] ?? []) {
+			noteIds.add(noteId);
 		}
 	}
 
 	return [...noteIds];
-}
-
-function markMovedUidPresenceFilesDirty(
-	plugin: ObakPluginApi,
-	uidPresences: ReadonlyMap<string, VaultUidPresence[]>,
-	currentFilePaths: ReadonlySet<string>,
-): void {
-	for (const presences of uidPresences.values()) {
-		for (const presence of presences) {
-			if (currentFilePaths.has(presence.filePath)) {
-				continue;
-			}
-
-			plugin.markFileDirty(presence.filePath);
-		}
-	}
 }
 
 function mergeDeletedFileTrackingForRebuild(
@@ -1555,88 +1177,53 @@ function mergeDeletedFileTrackingForRebuild(
 			continue;
 		}
 
-		const preservedUids = (previousIndex.uidsByFile[filePath] ?? []).filter(
-			(uid) => !nextIndex.cardsByUid[uid],
+		const preservedNoteIds = (previousIndex.noteIdsByFile[filePath] ?? []).filter(
+			(noteId) => !nextIndex.cardsByNoteId[noteId],
 		);
-		if (preservedUids.length === 0) {
+		if (preservedNoteIds.length === 0) {
 			continue;
 		}
 
-		nextIndex.uidsByFile[filePath] = [...preservedUids];
+		nextIndex.noteIdsByFile[filePath] = [...preservedNoteIds];
 		nextIndex.deletedFilePaths.push(filePath);
 
-		for (const uid of preservedUids) {
-			const record = previousIndex.cardsByUid[uid];
+		for (const noteId of preservedNoteIds) {
+			const record = previousIndex.cardsByNoteId[noteId];
 			if (!record) {
 				continue;
 			}
 
-			nextIndex.cardsByUid[uid] = { ...record };
+			nextIndex.cardsByNoteId[noteId] = { ...record };
 		}
 	}
 }
 
-async function filterScannedFilesWithUidConflicts(
+async function filterScannedFilesWithNoteIdConflicts(
 	plugin: ObakPluginApi,
 	scannedFiles: ScannedFile[],
 	indexSnapshot: PluginIndex,
-): Promise<UidConflictFilterResult> {
-	// 先收集本轮扫描中“每个 UID 被哪些卡片声明”。
-	const claimsByUid = new Map<string, ParsedCard[]>();
+): Promise<NoteIdConflictFilterResult> {
+	const claimsByNoteId = new Map<string, ParsedCard[]>();
 	const scannedFilePaths = new Set(scannedFiles.map((scannedFile) => scannedFile.file.path));
 	const conflictMessages: string[] = [];
 	const conflictedFilePaths = new Set<string>();
-	const candidateUids = new Set<string>();
 
 	for (const scannedFile of scannedFiles) {
 		for (const card of scannedFile.cards) {
-			if (!card.uid) {
+			if (!card.noteId) {
 				continue;
 			}
 
-			const claims = claimsByUid.get(card.uid) ?? [];
+			const claims = claimsByNoteId.get(card.noteId) ?? [];
 			claims.push(card);
-			claimsByUid.set(card.uid, claims);
+			claimsByNoteId.set(card.noteId, claims);
 		}
 	}
 
-	for (const [uid, claims] of claimsByUid.entries()) {
-		if (claims.length !== 1) {
-			continue;
-		}
-
-		const claim = claims[0];
-		if (!claim) {
-			continue;
-		}
-
-		const existingRecord = findCardIndexRecord(indexSnapshot, uid);
-		if (!existingRecord || existingRecord.filePath === claim.filePath) {
-			continue;
-		}
-
-		if (!plugin.app.vault.getFileByPath(existingRecord.filePath)) {
-			continue;
-		}
-
-		if (scannedFilePaths.has(existingRecord.filePath)) {
-			continue;
-		}
-
-		candidateUids.add(uid);
-	}
-
-	const liveUidPresences = await findUidPresencesInVault(
-		plugin,
-		candidateUids,
-		scannedFilePaths,
-	);
-
-	for (const [uid, claims] of claimsByUid.entries()) {
+	for (const [noteId, claims] of claimsByNoteId.entries()) {
 		if (claims.length > 1) {
-			// 同一轮扫描内出现多个相同 UID，直接判为冲突。
 			conflictMessages.push(
-				`Duplicate card UID "${uid}" found at ${formatCardLocations(claims)}. Keep each card UID unique across the vault.`,
+				`Duplicate card id "${noteId}" found at ${formatCardLocations(claims)}. Keep each card id unique across the vault.`,
 			);
 			for (const claim of claims) {
 				conflictedFilePaths.add(claim.filePath);
@@ -1649,40 +1236,23 @@ async function filterScannedFilesWithUidConflicts(
 			continue;
 		}
 
-		const existingRecord = findCardIndexRecord(indexSnapshot, uid);
-		if (!existingRecord || existingRecord.filePath === claim.filePath) {
-			continue;
+		const existingRecord = indexSnapshot.cardsByNoteId[noteId];
+		if (
+			existingRecord &&
+			existingRecord.filePath !== claim.filePath &&
+			plugin.app.vault.getFileByPath(existingRecord.filePath) &&
+			!scannedFilePaths.has(existingRecord.filePath)
+		) {
+			conflictMessages.push(
+				`Duplicate card id "${noteId}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingRecord.filePath}.`,
+			);
+			conflictedFilePaths.add(claim.filePath);
 		}
-
-		if (!plugin.app.vault.getFileByPath(existingRecord.filePath)) {
-			continue;
-		}
-
-		if (scannedFilePaths.has(existingRecord.filePath)) {
-			continue;
-		}
-
-		const liveConflicts = liveUidPresences.get(uid) ?? [];
-		if (liveConflicts.length === 0) {
-			continue;
-		}
-
-		// 另一种冲突：当前扫描文件的 UID 与索引里“其他仍存在文件”的 UID 撞车。
-		conflictMessages.push(
-			`Duplicate card UID "${uid}" at ${claim.filePath}:${claim.startLine} conflicts with ${formatUidPresenceLocations(liveConflicts)}. Remove the duplicate or move the original card first.`,
-		);
-		conflictedFilePaths.add(claim.filePath);
 	}
 
 	for (const filePath of conflictedFilePaths) {
 		plugin.markFileDirty(filePath);
-	}
-
-	if (conflictMessages.length > 0) {
-		logVerbose(plugin, "Detected duplicate UID conflicts during scan.", {
-			conflicts: conflictMessages.length,
-			conflictedFiles: [...conflictedFilePaths],
-		});
+		plugin.indexStore.markFilePendingSync(filePath);
 	}
 
 	return {
@@ -1693,248 +1263,9 @@ async function filterScannedFilesWithUidConflicts(
 	};
 }
 
-async function findUidPresencesInVault(
-	plugin: ObakPluginApi,
-	uids: Iterable<string>,
-	excludedFilePaths: ReadonlySet<string> = new Set<string>(),
-): Promise<Map<string, VaultUidPresence[]>> {
-	const normalizedUids = [...new Set([...uids].map((uid) => uid.trim()).filter(Boolean))];
-	if (normalizedUids.length === 0) {
-		return new Map();
-	}
-
-	const targetUidSet = new Set(normalizedUids);
-	const presencesByUid = new Map<string, VaultUidPresence[]>();
-
-	for (const file of plugin.app.vault.getMarkdownFiles()) {
-		if (excludedFilePaths.has(file.path)) {
-			continue;
-		}
-
-		const text = await plugin.app.vault.read(file);
-		const matchedUids = normalizedUids.filter((uid) => text.includes(uid));
-		if (matchedUids.length === 0) {
-			continue;
-		}
-
-		const parsed = parseCardsFromMarkdown(text, file.path);
-		const parsedUids = new Set<string>();
-
-		for (const card of parsed.cards) {
-			const uid = card.endMeta.uid?.trim() ?? "";
-			if (!targetUidSet.has(uid)) {
-				continue;
-			}
-
-			parsedUids.add(uid);
-			const presences = presencesByUid.get(uid) ?? [];
-			presences.push({
-				filePath: file.path,
-				startLine: card.startLine,
-			});
-			presencesByUid.set(uid, presences);
-		}
-
-		for (const uid of matchedUids) {
-			if (parsedUids.has(uid)) {
-				continue;
-			}
-
-			const presences = presencesByUid.get(uid) ?? [];
-			presences.push({
-				filePath: file.path,
-				startLine: null,
-			});
-			presencesByUid.set(uid, presences);
-		}
-	}
-
-	return presencesByUid;
-}
-
-async function buildBlockedCreateCardKeys(
-	client: AnkiClient,
-	preparedFiles: PreparedSyncFile[],
-	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
-	runtimeErrors: string[],
-	initialBlockedCardKeys: ReadonlySet<string> = new Set<string>(),
-): Promise<Set<string>> {
-	// 对潜在新建卡片执行 `canAddNotes` 预检查，提前挡住重复 UID 等错误。
-	const blockedCardKeys = new Set<string>(initialBlockedCardKeys);
-	const createCandidates = collectCreateCandidates(preparedFiles, existingNotesById);
-
-	const remainingCandidates = createCandidates.filter(
-		(candidate) => !blockedCardKeys.has(getCardLocationKey(candidate.state.finalCard)),
-	);
-	const preflightCandidates = remainingCandidates.filter((candidate) =>
-		Boolean(candidate.state.finalCard.effectiveDeck.trim()),
-	);
-	if (preflightCandidates.length === 0) {
-		return blockedCardKeys;
-	}
-
-	try {
-		const canAddResults = await client.canAddObakNotes(
-			preflightCandidates.map((candidate) =>
-				buildObakNoteInput(candidate.state.finalCard, null),
-			),
-		);
-
-		preflightCandidates.forEach((candidate, index) => {
-			if (canAddResults[index]) {
-				return;
-			}
-
-			blockedCardKeys.add(getCardLocationKey(candidate.state.finalCard));
-			runtimeErrors.push(
-				formatCardError(
-					candidate.state.finalCard,
-					"Cannot create note in Anki. Preflight check failed; this usually means ObsidianUid already exists.",
-				),
-			);
-		});
-	} catch (error) {
-		runtimeErrors.push(`Anki preflight check failed: ${asErrorMessage(error)}`);
-	}
-
-	return blockedCardKeys;
-}
-
-function collectCreateCandidates(
-	preparedFiles: PreparedSyncFile[],
-	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
-): PendingCreateCandidate[] {
-	// 只挑出“没有 noteId”或“noteId 已失效”的卡片，作为创建候选。
-	return preparedFiles.flatMap((preparedFile) =>
-		preparedFile.cards
-			.map((state) => ({
-				state,
-				existingNote: state.finalCard.noteId
-					? existingNotesById.get(state.finalCard.noteId) ?? null
-					: null,
-			}))
-			.filter((candidate) => !candidate.state.finalCard.noteId || candidate.existingNote === null),
-	);
-}
-
-async function recoverPreparedCardsByUid(
-	client: AnkiClient,
-	preparedFiles: PreparedSyncFile[],
-	existingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
-	runtimeErrors: string[],
-): Promise<UidRecoveryResult> {
-	// 某些卡片文件里 noteId 丢了，但 UID 还在；这时可以尝试按 UID 把 noteId 找回来。
-	const blockedCardKeys = new Set<string>();
-	const statesNeedingRecovery = preparedFiles.flatMap((preparedFile) =>
-		preparedFile.cards.filter((state) => {
-			const noteId = state.finalCard.noteId;
-			return !noteId || !existingNotesById.has(noteId);
-		}),
-	);
-
-	const uidsToRecover = [
-		...new Set(
-			statesNeedingRecovery
-				.map((state) => state.finalCard.uid?.trim() ?? "")
-				.filter(Boolean),
-		),
-	];
-
-	if (uidsToRecover.length === 0) {
-		return {
-			blockedCardKeys,
-			recoveredNoteIds: [],
-		};
-	}
-
-	try {
-		const noteIdsByUid = await client.findNotesByObsidianUid(uidsToRecover);
-		const recoveredNoteIds = new Set<string>();
-
-		for (const state of statesNeedingRecovery) {
-			const uid = state.finalCard.uid?.trim() ?? "";
-			if (!uid) {
-				continue;
-			}
-
-			const matches = noteIdsByUid.get(uid) ?? [];
-			if (matches.length === 1) {
-				// 唯一匹配时可自动恢复 noteId，避免重复创建 Anki 笔记。
-				const [matchedNoteId] = matches;
-				if (matchedNoteId) {
-					state.finalCard = {
-						...state.finalCard,
-						noteId: matchedNoteId,
-					};
-					recoveredNoteIds.add(matchedNoteId);
-				}
-				continue;
-			}
-
-			if (matches.length > 1) {
-				// 一个 UID 对应多条 Anki 笔记时无法自动决策，只能阻塞并让用户手工清理。
-				blockedCardKeys.add(getCardLocationKey(state.finalCard));
-				runtimeErrors.push(
-					formatCardError(
-						state.finalCard,
-						`Multiple Anki notes share ObsidianUid "${uid}". Delete the duplicates in Anki and sync again.`,
-					),
-				);
-			}
-		}
-
-		return {
-			blockedCardKeys,
-			recoveredNoteIds: [...recoveredNoteIds],
-		};
-	} catch (error) {
-		runtimeErrors.push(`Anki UID recovery failed: ${asErrorMessage(error)}`);
-		return {
-			blockedCardKeys,
-			recoveredNoteIds: [],
-		};
-	}
-}
-
-function buildObakNoteInput(
-	card: ParsedCard,
-	ankiNoteId: string | null,
-): ObakNoteInput {
-	// 这里统一收口“同步到 Anki 时到底传哪些字段”，方便创建和更新共用。
-	if (!card.uid) {
-		throw new Error(`Missing card UID for ${getCardLocationKey(card)}.`);
-	}
-
-	return {
-		deckName: card.effectiveDeck,
-		tags: card.effectiveTags,
-		fields: {
-			obsidianUid: card.uid,
-			ankiDeck: card.effectiveDeck,
-			ankiTags: card.effectiveTags,
-			ankiNoteId,
-			front: card.frontNormalized,
-			back: card.backNormalized,
-			obsidianUri: card.obUri,
-			obsidianPath: card.filePath,
-			obsidianRev: card.rev,
-		},
-	};
-}
-
 function formatCardLocations(cards: Pick<ParsedCard, "filePath" | "startLine">[]): string {
 	return cards
 		.map((card) => `${card.filePath}:${card.startLine}`)
-		.join(", ");
-}
-
-function formatUidPresenceLocations(presences: VaultUidPresence[]): string {
-	return presences
-		.map((presence) =>
-			presence.startLine === null
-				? presence.filePath
-				: `${presence.filePath}:${presence.startLine}`,
-		)
 		.join(", ");
 }
 
@@ -1946,11 +1277,9 @@ function selectFilesForIncrementalSync(
 	plugin: ObakPluginApi,
 	indexSnapshot: PluginIndex,
 ): IncrementalSyncSelection {
-	// 增量同步并不只是看 dirty 标记：
-	// - 若从未同步过，则必须全量扫描
-	// - 若扫描配置变化，则必须全量扫描
 	const scanConfigSignature = buildScanConfigSignature(plugin.settings);
 	const dirtyPaths = new Set(plugin.getDirtyFilePaths());
+	const pendingSyncFilePaths = new Set(plugin.indexStore.getPendingSyncFilePaths());
 	const allFiles = plugin.app.vault.getMarkdownFiles();
 	const filesByPath = new Map(allFiles.map((file) => [file.path, file]));
 	const staleDirtyPaths = [...dirtyPaths].filter((filePath) => !filesByPath.has(filePath));
@@ -1963,8 +1292,8 @@ function selectFilesForIncrementalSync(
 				shouldIncrementallySyncFile(
 					file,
 					dirtyPaths,
+					pendingSyncFilePaths,
 					indexSnapshot.lastSyncAt,
-					indexSnapshot,
 				),
 		  );
 
@@ -1978,15 +1307,10 @@ function selectFilesForIncrementalSync(
 function shouldIncrementallySyncFile(
 	file: TFile,
 	dirtyPaths: ReadonlySet<string>,
+	pendingSyncFilePaths: ReadonlySet<string>,
 	lastSyncAt: number | null,
-	indexSnapshot: PluginIndex,
 ): boolean {
-	// dirty 优先；否则再根据文件创建/修改时间与上次同步时间比较。
-	if (dirtyPaths.has(file.path)) {
-		return true;
-	}
-
-	if (hasTrackedCardsPendingSync(indexSnapshot, file.path)) {
+	if (dirtyPaths.has(file.path) || pendingSyncFilePaths.has(file.path)) {
 		return true;
 	}
 
@@ -1997,12 +1321,67 @@ function shouldIncrementallySyncFile(
 	return file.stat.mtime > lastSyncAt || file.stat.ctime > lastSyncAt;
 }
 
-function hasTrackedCardsPendingSync(
-	indexSnapshot: PluginIndex,
+function buildObakNoteInput(
+	card: ParsedCard,
+	options: {
+		ankiNoteId: string | null;
+		obakSyncId: string;
+		obsidianRev: string;
+	},
+): {
+	deckName: string;
+	fields: {
+		obakSyncId: string;
+		ankiDeck: string;
+		ankiNoteId: string | null;
+		ankiTags: string[];
+		back: string;
+		front: string;
+		obsidianPath: string;
+		obsidianRev: string;
+		obsidianUri: string;
+	};
+	tags: string[];
+} {
+	return {
+		deckName: card.effectiveDeck,
+		tags: card.effectiveTags,
+		fields: {
+			obakSyncId: options.obakSyncId,
+			ankiDeck: card.effectiveDeck,
+			ankiTags: card.effectiveTags,
+			ankiNoteId: options.ankiNoteId,
+			front: card.frontNormalized,
+			back: card.backNormalized,
+			obsidianUri: card.obUri,
+			obsidianPath: card.filePath,
+			obsidianRev: options.obsidianRev,
+		},
+	};
+}
+
+function generateObakSyncId(): string {
+	if (typeof globalThis.crypto?.randomUUID === "function") {
+		return globalThis.crypto.randomUUID().replace(/-/g, "");
+	}
+
+	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getAnkiStoredRev(note: AnkiNoteInfo | null): string | null {
+	const value = note?.fields["ObsidianRev"]?.trim();
+	return value ? value : null;
+}
+
+function syncFilePendingState(
+	plugin: ObakPluginApi,
 	filePath: string,
-): boolean {
-	return (indexSnapshot.uidsByFile[filePath] ?? []).some((uid) => {
-		const record = indexSnapshot.cardsByUid[uid];
-		return record ? !record.ankiNoteId || record.lastSyncedRev === null : false;
-	});
+	isPending: boolean,
+): void {
+	if (isPending) {
+		plugin.indexStore.markFilePendingSync(filePath);
+		return;
+	}
+
+	plugin.indexStore.clearFilePendingSync(filePath);
 }

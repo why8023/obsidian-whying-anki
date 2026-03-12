@@ -6,10 +6,8 @@ import type {
 	ParsedCardBlock,
 } from "./types";
 
-// 三个标记分别对应：开始卡片、切换到背面、结束卡片。
 type MarkerKind = "card-start" | "card-back" | "card-end";
 
-// 解析一行 marker 的返回值：没匹配、匹配但报错、匹配成功并带解析结果。
 type MarkerParseResult =
 	| { matched: false }
 	| { matched: true; error: ParseError }
@@ -20,7 +18,6 @@ type MarkerParseResult =
 			endMeta?: CardEndMeta;
 	  };
 
-// 为了支持“按原文偏移重写 `card-end`”，解析时要保留每一行的字符区间。
 interface LineEntry {
 	lineNumber: number;
 	text: string;
@@ -28,7 +25,6 @@ interface LineEntry {
 	endOffset: number;
 }
 
-// 扫描中的临时状态：`card-start` 打开后，逐行收集 front/back 内容，直到遇到 `card-end`。
 interface CardParseState {
 	startLine: number;
 	startMeta: CardStartMeta;
@@ -40,18 +36,8 @@ interface CardParseState {
 const MARKER_PATTERN = /^<!--\s*(card-start|card-back|card-end)(.*?)-->$/;
 const ATTRIBUTE_PATTERN = /\s+([A-Za-z][\w-]*)="([^"]*)"/gy;
 const START_ATTRIBUTES = new Set(["deck", "tags"]);
-const END_ATTRIBUTES = new Set(["uid", "id", "rev"]);
+const END_ATTRIBUTES = new Set(["id", "rev"]);
 
-/**
- * 从 Markdown 中提取卡片块。
- *
- * 支持的基本结构：
- * <!-- card-start deck="..." tags="..." -->
- * Front
- * <!-- card-back -->
- * Back
- * <!-- card-end uid="..." id="..." rev="..." -->
- */
 export function parseCardsFromMarkdown(
 	text: string,
 	filePath: string,
@@ -65,7 +51,6 @@ export function parseCardsFromMarkdown(
 		const marker = parseMarkerLine(line.text.trim(), filePath, line.lineNumber);
 
 		if (!marker.matched) {
-			// 非 marker 行只会在卡片打开期间被收集；卡片外部文本会被忽略。
 			if (current) {
 				const bucket = current.backLine === null ? current.frontLines : current.backLines;
 				bucket.push(line.text);
@@ -80,7 +65,6 @@ export function parseCardsFromMarkdown(
 
 		if (marker.kind === "card-start") {
 			if (current) {
-				// 当前实现不允许在一张卡内部再开启另一张卡。
 				errors.push(
 					createParseError(
 						filePath,
@@ -113,7 +97,6 @@ export function parseCardsFromMarkdown(
 			}
 
 			if (current.backLine !== null) {
-				// 一张卡只能从 front 切到 back 一次。
 				errors.push(
 					createParseError(
 						filePath,
@@ -153,8 +136,6 @@ export function parseCardsFromMarkdown(
 
 		const frontRaw = current.frontLines.join("\n");
 		const backRaw = current.backLines.join("\n");
-
-		// front/back 都为空时，虽然语法完整，但没有实际意义，直接报错。
 		if (!normalizeCardBody(frontRaw) && !normalizeCardBody(backRaw)) {
 			errors.push(
 				createParseError(
@@ -178,7 +159,7 @@ export function parseCardsFromMarkdown(
 			frontRaw,
 			backRaw,
 			startMeta: current.startMeta,
-			endMeta: marker.endMeta ?? { uid: null, noteId: null, rev: null },
+			endMeta: marker.endMeta ?? { noteId: null, rev: null },
 		});
 		current = null;
 	}
@@ -198,13 +179,8 @@ export function parseCardsFromMarkdown(
 	return { cards, errors };
 }
 
-/**
- * 把结束标记元信息序列化回 Markdown 注释行。
- * 只有非空字段才会输出，避免生成冗余属性。
- */
 export function serializeCardEnd(meta: CardEndMeta): string {
 	const attributes = [
-		meta.uid ? `uid="${meta.uid}"` : null,
 		meta.noteId ? `id="${meta.noteId}"` : null,
 		meta.rev ? `rev="${meta.rev}"` : null,
 	].filter((value): value is string => value !== null);
@@ -272,9 +248,6 @@ function parseMarkerLine(
 		matched: true,
 		kind,
 		endMeta: {
-			// 结束标记中的 `id` 对应 Anki noteId；为避免和 Obsidian/TypeScript 常见 `id` 混淆，
-			// 后续统一转换成 `noteId` 字段。
-			uid: attributeResult.values.uid ?? null,
 			noteId: attributeResult.values.id ?? null,
 			rev: attributeResult.values.rev ?? null,
 		},
@@ -292,7 +265,6 @@ function parseAttributes(
 	let cursor = 0;
 
 	while (cursor < attributes.length) {
-		// 用带 sticky 标记的正则从当前位置向后解析，确保不会跳过非法字符。
 		ATTRIBUTE_PATTERN.lastIndex = cursor;
 		const match = ATTRIBUTE_PATTERN.exec(attributes);
 
@@ -360,7 +332,6 @@ function getLineEntries(text: string): LineEntry[] {
 		return [];
 	}
 
-	// 手动切行是为了同时拿到行号和每一行在原文中的字符偏移。
 	const entries: LineEntry[] = [];
 	let start = 0;
 	let lineNumber = 1;
