@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-obak",
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"description": "Obsidian desktop plugin for staged one-way card sync into Anki.",
 	"main": "main.js",
 	"type": "module",
