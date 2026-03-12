@@ -68,6 +68,10 @@ interface NoteIdConflictFilterResult {
 	safeScannedFiles: ScannedFile[];
 }
 
+interface FullVaultDeletePolicy {
+	allowImplicitDeletes: boolean;
+}
+
 const SCAN_CONFIG_SIGNATURE_VERSION = 2;
 const INVALID_BACKUP_FILE_NAME_CHARACTERS = new Set([
 	"<",
@@ -375,9 +379,10 @@ async function syncCardsToAnkiForFiles(
 		total: null,
 	});
 
+	const allScannedFiles = await scanMarkdownFiles(plugin.app, filesToScan, plugin.settings);
 	const scannedFiles = await filterScannedFilesWithNoteIdConflicts(
 		plugin,
-		await scanMarkdownFiles(plugin.app, filesToScan, plugin.settings),
+		allScannedFiles,
 		indexSnapshot,
 	);
 	const result = createSyncResult();
@@ -415,6 +420,12 @@ async function syncCardsToAnkiForFiles(
 		scannedFiles.safeScannedFiles.map((scannedFile) =>
 			prepareScannedFile(scannedFile, indexSnapshot),
 		),
+	);
+	const fullVaultDeletePolicy = createFullVaultDeletePolicy(
+		plugin,
+		fullVaultComparison,
+		allScannedFiles,
+		scannedFiles,
 	);
 	const initialActiveNoteIds = collectActiveNoteIds(preparedFiles);
 	let existingNotesById = new Map<string, AnkiNoteInfo>();
@@ -476,7 +487,7 @@ async function syncCardsToAnkiForFiles(
 		preparedFiles,
 		validExistingNotesById,
 		deletedFileSelection,
-		fullVaultComparison,
+		fullVaultDeletePolicy,
 		result,
 	);
 	const deletePhaseSucceeded = await executeDeletePhase(
@@ -605,7 +616,7 @@ async function prepareDeleteContext(
 	preparedFiles: PreparedScannedFile[],
 	validExistingNotesById: ReadonlyMap<string, AnkiNoteInfo>,
 	deletedFileSelection: DeletedFileSyncSelection,
-	fullVaultComparison: boolean,
+	fullVaultDeletePolicy: FullVaultDeletePolicy,
 	result: SyncToAnkiResult,
 ): Promise<{ confirmedDeleteIds: string[] }> {
 	const activeNoteIds = collectActiveNoteIds(preparedFiles);
@@ -633,11 +644,20 @@ async function prepareDeleteContext(
 		}
 	}
 
-	if (fullVaultComparison) {
+	if (fullVaultDeletePolicy.allowImplicitDeletes) {
 		for (const noteId of validExistingNotesById.keys()) {
 			if (!activeNoteIds.has(noteId)) {
 				deleteNoteIds.add(noteId);
 			}
+		}
+	} else {
+		const implicitDeleteNoteIds = [...validExistingNotesById.keys()].filter(
+			(noteId) => !activeNoteIds.has(noteId) && !deleteNoteIds.has(noteId),
+		);
+		if (implicitDeleteNoteIds.length > 0) {
+			result.runtimeErrors.push(
+				`Skipped implicit full-vault delete for ${implicitDeleteNoteIds.length} note(s) because the full sync scan was not fully trusted. Fix parse errors or duplicate card ids, then run full sync again.`,
+			);
 		}
 	}
 
@@ -723,6 +743,27 @@ function shouldDeferSyncUntilVaultReady(plugin: ObakPluginApi): boolean {
 	const trackedFiles = getTrackedFilePathsFromIndex(plugin.indexStore.getSnapshot()).length;
 	const currentFiles = plugin.app.vault.getMarkdownFiles().length;
 	return trackedFiles > 0 && currentFiles === 0;
+}
+
+function createFullVaultDeletePolicy(
+	plugin: ObakPluginApi,
+	fullVaultComparison: boolean,
+	allScannedFiles: readonly ScannedFile[],
+	scannedFiles: NoteIdConflictFilterResult,
+): FullVaultDeletePolicy {
+	if (!fullVaultComparison) {
+		return {
+			allowImplicitDeletes: false,
+		};
+	}
+
+	const hasParseErrors = allScannedFiles.some((scannedFile) => scannedFile.errors.length > 0);
+	const hasConflicts = scannedFiles.conflictMessages.length > 0;
+
+	return {
+		allowImplicitDeletes:
+			plugin.app.workspace.layoutReady && !hasParseErrors && !hasConflicts,
+	};
 }
 
 function createVaultLoadingDeferredResult(
@@ -853,6 +894,7 @@ async function syncPreparedCard(
 
 	const obakSyncId = existingNote.fields["ObakSyncId"]?.trim() || generateObakSyncId();
 	try {
+		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		await client.updateObakNote(
 			card.noteId,
 			buildObakNoteInput(card, {
@@ -861,7 +903,6 @@ async function syncPreparedCard(
 				obsidianRev: state.computedRev,
 			}),
 		);
-		await client.changeDeck(existingNote.cards, card.effectiveDeck);
 		result.cardsUpdated += 1;
 		return {
 			...state,
