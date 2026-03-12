@@ -36,6 +36,7 @@ interface CardParseState {
 const MARKER_PATTERN = /^<!--\s*(card-start|card-back|card-end)(.*?)-->$/;
 const ATTRIBUTE_PATTERN = /\s+([A-Za-z][\w-]*)="([^"]*)"/gy;
 const START_ATTRIBUTES = new Set(["deck", "tags"]);
+// Accept legacy rev markers on read; local rewrites only keep the note id.
 const END_ATTRIBUTES = new Set(["id", "rev"]);
 
 export function parseCardsFromMarkdown(
@@ -159,7 +160,7 @@ export function parseCardsFromMarkdown(
 			frontRaw,
 			backRaw,
 			startMeta: current.startMeta,
-			endMeta: marker.endMeta ?? { noteId: null, rev: null },
+			endMeta: marker.endMeta ?? { noteId: null },
 		});
 		current = null;
 	}
@@ -180,10 +181,9 @@ export function parseCardsFromMarkdown(
 }
 
 export function serializeCardEnd(meta: CardEndMeta): string {
-	const attributes = [
-		meta.noteId ? `id="${meta.noteId}"` : null,
-		meta.rev ? `rev="${meta.rev}"` : null,
-	].filter((value): value is string => value !== null);
+	const attributes = [meta.noteId ? `id="${meta.noteId}"` : null].filter(
+		(value): value is string => value !== null,
+	);
 
 	return attributes.length > 0
 		? `<!-- card-end ${attributes.join(" ")} -->`
@@ -249,7 +249,6 @@ function parseMarkerLine(
 		kind,
 		endMeta: {
 			noteId: attributeResult.values.id ?? null,
-			rev: attributeResult.values.rev ?? null,
 		},
 	};
 }

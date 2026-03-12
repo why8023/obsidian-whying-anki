@@ -134,7 +134,7 @@ async function runRefreshCurrentFile(
 	plugin: Plugin & ObakPluginApi,
 	file: TFile,
 ): Promise<void> {
-	// 刷新本地元数据会更新 card-end 中的 id/rev 标记，但不访问 Anki。
+	// 刷新本地元数据会更新 card-end 中的 id 标记，但不访问 Anki。
 	logVerbose(plugin, `Refreshing local metadata for ${file.path}.`);
 	const result = await refreshLocalMetadataForFiles(plugin, [file]);
 	reportResult(

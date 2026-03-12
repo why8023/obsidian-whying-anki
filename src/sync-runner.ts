@@ -755,7 +755,6 @@ async function prepareScannedFile(
 				finalCard: {
 					...originalCard,
 					noteId: originalCard.noteId,
-					rev: computedRev,
 				},
 				computedRev,
 				needsRetry: false,
@@ -791,10 +790,7 @@ async function syncPreparedCard(
 		result.runtimeErrors.push(formatCardError(card, "Card deck is empty."));
 		return {
 			...state,
-			finalCard: {
-				...card,
-				rev: existingRev ?? state.originalCard.rev,
-			},
+			finalCard: card,
 			needsRetry: Boolean(card.noteId),
 		};
 	}
@@ -823,7 +819,6 @@ async function syncPreparedCard(
 				finalCard: {
 					...card,
 					noteId,
-					rev: state.computedRev,
 				},
 				needsRetry: false,
 			};
@@ -834,7 +829,6 @@ async function syncPreparedCard(
 				finalCard: {
 					...card,
 					noteId: null,
-					rev: null,
 				},
 				needsRetry: true,
 			};
@@ -845,10 +839,7 @@ async function syncPreparedCard(
 		result.cardsUnchanged += 1;
 		return {
 			...state,
-			finalCard: {
-				...card,
-				rev: existingRev ?? state.computedRev,
-			},
+			finalCard: card,
 			needsRetry: false,
 		};
 	}
@@ -867,20 +858,14 @@ async function syncPreparedCard(
 		result.cardsUpdated += 1;
 		return {
 			...state,
-			finalCard: {
-				...card,
-				rev: state.computedRev,
-			},
+			finalCard: card,
 			needsRetry: false,
 		};
 	} catch (error) {
 		result.runtimeErrors.push(formatCardError(card, asErrorMessage(error)));
 		return {
 			...state,
-			finalCard: {
-				...card,
-				rev: existingRev ?? state.originalCard.rev,
-			},
+			finalCard: card,
 			needsRetry: true,
 		};
 	}
@@ -900,7 +885,6 @@ function resetPreparedCardsWithInvalidIds(
 			state.finalCard = {
 				...state.finalCard,
 				noteId: null,
-				rev: null,
 			};
 		}
 	}
@@ -911,7 +895,6 @@ function buildCardRewrites(cards: PreparedCardState[]): CardRewrite[] {
 		.map((card) => {
 			const replacement = serializeCardEnd({
 				noteId: card.finalCard.noteId,
-				rev: card.finalCard.rev,
 			});
 
 			return replacement === card.originalCard.originalEndMarker

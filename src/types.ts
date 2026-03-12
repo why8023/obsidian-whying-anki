@@ -8,7 +8,6 @@ export interface CardStartMeta {
 
 export interface CardEndMeta {
 	noteId: string | null;
-	rev: string | null;
 }
 
 export interface ParseError {
@@ -33,7 +32,6 @@ export interface ParsedCardBlock {
 
 export interface ParsedCard extends ParsedCardBlock {
 	noteId: string | null;
-	rev: string | null;
 	fileMtime: number;
 	frontNormalized: string;
 	backNormalized: string;
