@@ -24,7 +24,7 @@ export class AutoSyncController {
 	}
 
 	onMarkdownFileModify(file: TFile): void {
-		if (!this.plugin.settings.autoSyncCurrentFile) {
+		if (!this.plugin.settings.autoSyncEnabled) {
 			return;
 		}
 
@@ -44,7 +44,7 @@ export class AutoSyncController {
 			return;
 		}
 
-		if (!this.plugin.settings.autoSyncCurrentFile || !this.isFileDirty(previousPath)) {
+		if (!this.plugin.settings.autoSyncEnabled || !this.isFileDirty(previousPath)) {
 			return;
 		}
 
@@ -56,7 +56,7 @@ export class AutoSyncController {
 			this.activeFilePath = null;
 		}
 
-		if (!this.plugin.settings.autoSyncCurrentFile) {
+		if (!this.plugin.settings.autoSyncEnabled) {
 			return;
 		}
 
@@ -68,7 +68,7 @@ export class AutoSyncController {
 			this.activeFilePath = file.path;
 		}
 
-		if (!this.plugin.settings.autoSyncCurrentFile) {
+		if (!this.plugin.settings.autoSyncEnabled) {
 			return;
 		}
 
@@ -110,7 +110,7 @@ export class AutoSyncController {
 	}
 
 	private async execute(reason: AutoSyncReason, sourcePath?: string): Promise<void> {
-		if (!this.plugin.settings.autoSyncCurrentFile) {
+		if (!this.plugin.settings.autoSyncEnabled) {
 			logVerbose(this.plugin, "Skipped auto sync because it is disabled.");
 			return;
 		}

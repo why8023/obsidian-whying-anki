@@ -1,37 +1,24 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { getSettingsTexts } from "./settings-text";
 
-/**
- * 插件设置。
- * 这些配置既影响扫描行为，也影响同步到 Anki 的运行方式。
- */
 export interface ObakSettings {
-	// 全局默认牌组；当卡片和文件都没声明 deck 时，插件会优先推导 scoped deck。
 	defaultDeck: string;
-	// 会合并进所有卡片的默认标签。
 	defaultTags: string[];
-	// AnkiConnect 服务地址。
 	ankiHost: string;
 	ankiPort: number;
-	// 是否在同步前自动创建缺失牌组。
 	autoCreateMissingDecks: boolean;
 	backupBeforeBulkDeleteEnabled: boolean;
 	backupBeforeBulkDeleteExportPath: string;
 	backupBeforeBulkDeleteThreshold: number;
-	autoSyncCurrentFile: boolean;
-	// 插件启动时是否自动对账缺失文件。
+	autoSyncEnabled: boolean;
 	reconcileOnStartup: boolean;
-	// notice 中显示完整错误列表，还是只显示摘要。
 	showDetailedErrorNotices: boolean;
-	// 是否把详细调试信息打印到开发者控制台。
 	enableVerboseLogging: boolean;
 }
 
-/**
- * 默认设置。
- */
 export const DEFAULT_SETTINGS: ObakSettings = {
-	defaultDeck: "",
-	defaultTags: [],
+	defaultDeck: "OBAK",
+	defaultTags: ["OBAK"],
 	ankiHost: "127.0.0.1",
 	ankiPort: 8765,
 	autoCreateMissingDecks: true,
@@ -39,21 +26,16 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	backupBeforeBulkDeleteExportPath: "",
 	backupBeforeBulkDeleteThreshold: 20,
 	reconcileOnStartup: true,
-	autoSyncCurrentFile: false,
+	autoSyncEnabled: false,
 	showDetailedErrorNotices: false,
 	enableVerboseLogging: false,
 };
 
-// 设置面板只依赖这一小组能力，避免和完整插件类强耦合。
 interface SettingsHost {
 	settings: ObakSettings;
 	savePluginData(): Promise<void>;
 }
 
-/**
- * 从持久化数据中加载设置，并对每个字段做安全归一化。
- * 这样可以兼容旧版本数据、手工编辑损坏的数据，或缺省字段。
- */
 export function loadSettings(settings?: unknown): ObakSettings {
 	const normalized = cloneSettings(DEFAULT_SETTINGS);
 	if (!isStringRecord(settings)) {
@@ -104,8 +86,8 @@ export function loadSettings(settings?: unknown): ObakSettings {
 		normalized.reconcileOnStartup = settings.reconcileOnStartup;
 	}
 
-	if (typeof settings.autoSyncCurrentFile === "boolean") {
-		normalized.autoSyncCurrentFile = settings.autoSyncCurrentFile;
+	if (typeof settings.autoSyncEnabled === "boolean") {
+		normalized.autoSyncEnabled = settings.autoSyncEnabled;
 	}
 
 	if (typeof settings.showDetailedErrorNotices === "boolean") {
@@ -119,10 +101,6 @@ export function loadSettings(settings?: unknown): ObakSettings {
 	return normalized;
 }
 
-/**
- * Obsidian 设置页实现。
- * 这里只负责 UI 和保存行为，不做复杂业务逻辑。
- */
 export class ObakSettingTab extends PluginSettingTab {
 	plugin: SettingsHost;
 
@@ -133,17 +111,15 @@ export class ObakSettingTab extends PluginSettingTab {
 
 	display(): void {
 		const { containerEl } = this;
+		const texts = getSettingsTexts();
 		containerEl.empty();
 
-		// 每个设置项改动后立刻持久化，避免需要单独的“保存”按钮。
 		new Setting(containerEl)
-			.setName("Default deck")
-			.setDesc(
-				"Acts as the root deck. If card and file decks are missing, try default deck::folder::note first, then default deck.",
-			)
+			.setName(texts.defaultDeck.name)
+			.setDesc(texts.defaultDeck.desc)
 			.addText((text) =>
 				text
-					.setPlaceholder("Biology::cell")
+					.setPlaceholder(texts.defaultDeck.placeholder)
 					.setValue(this.plugin.settings.defaultDeck)
 					.onChange(async (value) => {
 						this.plugin.settings.defaultDeck = value.trim();
@@ -152,11 +128,11 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Default tags")
-			.setDesc("Comma-separated tags merged into every card.")
+			.setName(texts.defaultTags.name)
+			.setDesc(texts.defaultTags.desc)
 			.addText((text) =>
 				text
-					.setPlaceholder("Bio, exam")
+					.setPlaceholder(texts.defaultTags.placeholder)
 					.setValue(this.plugin.settings.defaultTags.join(", "))
 					.onChange(async (value) => {
 						this.plugin.settings.defaultTags = parseCommaSeparated(value);
@@ -165,11 +141,11 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Anki host")
-			.setDesc("Host used for local Anki sync requests.")
+			.setName(texts.ankiHost.name)
+			.setDesc(texts.ankiHost.desc)
 			.addText((text) =>
 				text
-					.setPlaceholder("127.0.0.1")
+					.setPlaceholder(texts.ankiHost.placeholder)
 					.setValue(this.plugin.settings.ankiHost)
 					.onChange(async (value) => {
 						this.plugin.settings.ankiHost = value.trim() || DEFAULT_SETTINGS.ankiHost;
@@ -178,8 +154,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Anki port")
-			.setDesc("Port used for local Anki sync requests.")
+			.setName(texts.ankiPort.name)
+			.setDesc(texts.ankiPort.desc)
 			.addText((text) =>
 				text
 					.setPlaceholder(String(DEFAULT_SETTINGS.ankiPort))
@@ -194,8 +170,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Auto-create missing decks")
-			.setDesc("Create the target deck in Anki before adding notes when needed.")
+			.setName(texts.autoCreateMissingDecks.name)
+			.setDesc(texts.autoCreateMissingDecks.desc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.autoCreateMissingDecks)
@@ -206,10 +182,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Backup before bulk delete")
-			.setDesc(
-				"When pending note deletions are greater than the threshold below, export the configured default deck before continuing.",
-			)
+			.setName(texts.backupBeforeBulkDelete.name)
+			.setDesc(texts.backupBeforeBulkDelete.desc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.backupBeforeBulkDeleteEnabled)
@@ -220,13 +194,11 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bulk delete backup export path")
-			.setDesc(
-				"Export directory or base .apkg path. A timestamped filename will be generated automatically from it.",
-			)
+			.setName(texts.backupBeforeBulkDeleteExportPath.name)
+			.setDesc(texts.backupBeforeBulkDeleteExportPath.desc)
 			.addText((text) =>
 				text
-					.setPlaceholder("Path to backup folder or .apkg file")
+					.setPlaceholder(texts.backupBeforeBulkDeleteExportPath.placeholder)
 					.setValue(this.plugin.settings.backupBeforeBulkDeleteExportPath)
 					.onChange(async (value) => {
 						this.plugin.settings.backupBeforeBulkDeleteExportPath = value.trim();
@@ -235,10 +207,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Bulk delete backup threshold")
-			.setDesc(
-				"Trigger deck export only when pending note deletions are greater than this number. Set 0 to export before any delete.",
-			)
+			.setName(texts.backupBeforeBulkDeleteThreshold.name)
+			.setDesc(texts.backupBeforeBulkDeleteThreshold.desc)
 			.addText((text) => {
 				text.inputEl.type = "number";
 				text.inputEl.min = "0";
@@ -255,8 +225,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName("Reconcile on startup")
-			.setDesc("Queue deletions for files missing from the vault at startup.")
+			.setName(texts.reconcileOnStartup.name)
+			.setDesc(texts.reconcileOnStartup.desc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.reconcileOnStartup)
@@ -267,24 +237,20 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Auto-sync incremental changes")
-			.setDesc(
-				"Wait 5 seconds after you stop editing, leave the current file, or change tracked files, then run incremental sync automatically. Auto sync may include other pending vault changes and never overlaps an in-flight sync.",
-			)
+			.setName(texts.autoSyncEnabled.name)
+			.setDesc(texts.autoSyncEnabled.desc)
 			.addToggle((toggle) =>
 				toggle
-					.setValue(this.plugin.settings.autoSyncCurrentFile)
+					.setValue(this.plugin.settings.autoSyncEnabled)
 					.onChange(async (value) => {
-						this.plugin.settings.autoSyncCurrentFile = value;
+						this.plugin.settings.autoSyncEnabled = value;
 						await this.plugin.savePluginData();
 					}),
 			);
 
 		new Setting(containerEl)
-			.setName("Show detailed error notices")
-			.setDesc(
-				"Show full parse and sync error details in notices instead of summary-only issue counts.",
-			)
+			.setName(texts.showDetailedErrorNotices.name)
+			.setDesc(texts.showDetailedErrorNotices.desc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.showDetailedErrorNotices)
@@ -295,10 +261,8 @@ export class ObakSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Verbose console logging")
-			.setDesc(
-				"Print detailed sync and file-tracking logs to the developer console.",
-			)
+			.setName(texts.enableVerboseLogging.name)
+			.setDesc(texts.enableVerboseLogging.desc)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.enableVerboseLogging)
@@ -311,7 +275,6 @@ export class ObakSettingTab extends PluginSettingTab {
 }
 
 function cloneSettings(settings: ObakSettings): ObakSettings {
-	// `defaultTags` 是数组，需要复制，避免调用方修改原对象。
 	return {
 		...settings,
 		defaultTags: [...settings.defaultTags],
@@ -319,7 +282,6 @@ function cloneSettings(settings: ObakSettings): ObakSettings {
 }
 
 function parseCommaSeparated(value: string): string[] {
-	// 统一做 trim 和去重，保证配置里标签顺序稳定且没有空项。
 	const seen = new Set<string>();
 	const normalized: string[] = [];
 
