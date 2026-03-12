@@ -2,7 +2,14 @@ import { basename, dirname, extname, join } from "path";
 import type { Plugin, TFile } from "obsidian";
 import { AnkiClient, type AnkiNoteInfo } from "./anki-client";
 import { OBAK_MODEL_NAME } from "./anki-model";
-import { createEmptyPluginIndex, IndexStore } from "./index-store";
+import {
+	buildNoteOwnerById,
+	createEmptyPluginIndex,
+	getDeletedFilePathsFromIndex,
+	getNoteIdsForFile,
+	getTrackedFilePathsFromIndex,
+	IndexStore,
+} from "./index-store";
 import { logVerbose } from "./logger";
 import { computeCardRevision } from "./normalize";
 import { scanMarkdownFile, scanMarkdownFiles } from "./scanner";
@@ -86,7 +93,7 @@ export async function reconcileMissingFiles(
 ): Promise<MissingFileReconcileResult> {
 	const snapshot = plugin.indexStore.getSnapshot();
 	const currentPaths = new Set(plugin.app.vault.getMarkdownFiles().map((file) => file.path));
-	const trackedPaths = Object.keys(snapshot.noteIdsByFile);
+	const trackedPaths = getTrackedFilePathsFromIndex(snapshot);
 	const missingFilePaths = trackedPaths.filter((filePath) => !currentPaths.has(filePath));
 	let changed = false;
 
@@ -713,7 +720,7 @@ async function executeDeletePhase(
 }
 
 function shouldDeferSyncUntilVaultReady(plugin: ObakPluginApi): boolean {
-	const trackedFiles = Object.keys(plugin.indexStore.getSnapshot().noteIdsByFile).length;
+	const trackedFiles = getTrackedFilePathsFromIndex(plugin.indexStore.getSnapshot()).length;
 	const currentFiles = plugin.app.vault.getMarkdownFiles().length;
 	return trackedFiles > 0 && currentFiles === 0;
 }
@@ -762,7 +769,7 @@ async function prepareScannedFile(
 		}),
 	);
 
-	const oldNoteIds = new Set(indexSnapshot.noteIdsByFile[scannedFile.file.path] ?? []);
+	const oldNoteIds = new Set(getNoteIdsForFile(indexSnapshot, scannedFile.file.path));
 	const newNoteIds = new Set(
 		cards
 			.map((card) => card.finalCard.noteId)
@@ -1117,7 +1124,7 @@ function resolveDeletedFilesForSync(
 	const missingFilePaths: string[] = [];
 	const restoredFilePaths: string[] = [];
 
-	for (const filePath of indexSnapshot.deletedFilePaths) {
+	for (const filePath of getDeletedFilePathsFromIndex(indexSnapshot)) {
 		const restoredFile = vaultFilesByPath.get(filePath);
 		if (restoredFile) {
 			restoredFilePaths.push(filePath);
@@ -1142,7 +1149,7 @@ function collectTrackedNoteIdsForFilePaths(
 	const noteIds = new Set<string>();
 
 	for (const filePath of filePaths) {
-		for (const noteId of indexSnapshot.noteIdsByFile[filePath] ?? []) {
+		for (const noteId of getNoteIdsForFile(indexSnapshot, filePath)) {
 			noteIds.add(noteId);
 		}
 	}
@@ -1155,28 +1162,26 @@ function mergeDeletedFileTrackingForRebuild(
 	previousIndex: PluginIndex,
 	currentFilePaths: ReadonlySet<string>,
 ): void {
-	for (const filePath of previousIndex.deletedFilePaths) {
+	const nextNoteOwnerById = buildNoteOwnerById(nextIndex);
+
+	for (const filePath of getDeletedFilePathsFromIndex(previousIndex)) {
 		if (currentFilePaths.has(filePath)) {
 			continue;
 		}
 
-		const preservedNoteIds = (previousIndex.noteIdsByFile[filePath] ?? []).filter(
-			(noteId) => !nextIndex.cardsByNoteId[noteId],
+		const preservedNoteIds = getNoteIdsForFile(previousIndex, filePath).filter(
+			(noteId) => !nextNoteOwnerById.has(noteId),
 		);
 		if (preservedNoteIds.length === 0) {
 			continue;
 		}
 
-		nextIndex.noteIdsByFile[filePath] = [...preservedNoteIds];
-		nextIndex.deletedFilePaths.push(filePath);
-
+		nextIndex.filesByPath[filePath] = {
+			noteIds: [...preservedNoteIds],
+			deleted: true,
+		};
 		for (const noteId of preservedNoteIds) {
-			const record = previousIndex.cardsByNoteId[noteId];
-			if (!record) {
-				continue;
-			}
-
-			nextIndex.cardsByNoteId[noteId] = { ...record };
+			nextNoteOwnerById.set(noteId, filePath);
 		}
 	}
 }
@@ -1187,6 +1192,7 @@ async function filterScannedFilesWithNoteIdConflicts(
 	indexSnapshot: PluginIndex,
 ): Promise<NoteIdConflictFilterResult> {
 	const claimsByNoteId = new Map<string, ParsedCard[]>();
+	const noteOwnerById = buildNoteOwnerById(indexSnapshot);
 	const scannedFilePaths = new Set(scannedFiles.map((scannedFile) => scannedFile.file.path));
 	const conflictMessages: string[] = [];
 	const conflictedFilePaths = new Set<string>();
@@ -1219,15 +1225,15 @@ async function filterScannedFilesWithNoteIdConflicts(
 			continue;
 		}
 
-		const existingRecord = indexSnapshot.cardsByNoteId[noteId];
+		const existingFilePath = noteOwnerById.get(noteId);
 		if (
-			existingRecord &&
-			existingRecord.filePath !== claim.filePath &&
-			plugin.app.vault.getFileByPath(existingRecord.filePath) &&
-			!scannedFilePaths.has(existingRecord.filePath)
+			existingFilePath &&
+			existingFilePath !== claim.filePath &&
+			plugin.app.vault.getFileByPath(existingFilePath) &&
+			!scannedFilePaths.has(existingFilePath)
 		) {
 			conflictMessages.push(
-				`Duplicate card id "${noteId}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingRecord.filePath}.`,
+				`Duplicate card id "${noteId}" at ${claim.filePath}:${claim.startLine} conflicts with ${existingFilePath}.`,
 			);
 			conflictedFilePaths.add(claim.filePath);
 		}

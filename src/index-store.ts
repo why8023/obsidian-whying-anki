@@ -1,26 +1,67 @@
-import type { ParsedCard, PluginIndex } from "./types";
+import type { FileIndexRecord, ParsedCard, PluginIndex } from "./types";
 
-const INDEX_SCHEMA_VERSION = 4;
+const INDEX_SCHEMA_VERSION = 5;
 
 export function createEmptyPluginIndex(): PluginIndex {
 	return {
 		schemaVersion: INDEX_SCHEMA_VERSION,
-		cardsByNoteId: {},
-		noteIdsByFile: {},
-		deletedFilePaths: [],
+		filesByPath: {},
 		pendingDeleteNoteIds: [],
-		pendingSyncFilePaths: [],
 		lastSyncAt: null,
 		lastScanConfigHash: null,
 		lastFullReconcileAt: null,
 	};
 }
 
+export function getTrackedFilePathsFromIndex(index: PluginIndex): string[] {
+	return Object.entries(index.filesByPath)
+		.filter(([, record]) => record.noteIds.length > 0)
+		.map(([filePath]) => filePath);
+}
+
+export function getTrackedNoteCountFromIndex(index: PluginIndex): number {
+	return new Set(
+		Object.values(index.filesByPath).flatMap((record) => record.noteIds),
+	).size;
+}
+
+export function getDeletedFilePathsFromIndex(index: PluginIndex): string[] {
+	return Object.entries(index.filesByPath)
+		.filter(([, record]) => record.deleted === true && record.noteIds.length > 0)
+		.map(([filePath]) => filePath);
+}
+
+export function getPendingSyncFilePathsFromIndex(index: PluginIndex): string[] {
+	return Object.entries(index.filesByPath)
+		.filter(([, record]) => record.pendingSync === true)
+		.map(([filePath]) => filePath);
+}
+
+export function getNoteIdsForFile(index: PluginIndex, filePath: string): string[] {
+	return [...(index.filesByPath[filePath]?.noteIds ?? [])];
+}
+
+export function buildNoteOwnerById(index: PluginIndex): Map<string, string> {
+	const noteOwnerById = new Map<string, string>();
+
+	for (const [filePath, record] of Object.entries(index.filesByPath)) {
+		for (const noteId of record.noteIds) {
+			if (!noteOwnerById.has(noteId)) {
+				noteOwnerById.set(noteId, filePath);
+			}
+		}
+	}
+
+	return noteOwnerById;
+}
+
 export class IndexStore {
 	private index: PluginIndex;
+	private noteOwnerById: Map<string, string>;
 
 	constructor(snapshot?: PluginIndex) {
 		this.index = loadPluginIndex(snapshot);
+		this.noteOwnerById = buildNoteOwnerById(this.index);
 	}
 
 	getSnapshot(): PluginIndex {
@@ -28,7 +69,7 @@ export class IndexStore {
 	}
 
 	getDeletedFilePaths(): string[] {
-		return [...this.index.deletedFilePaths];
+		return getDeletedFilePathsFromIndex(this.index);
 	}
 
 	getPendingDeleteNoteIds(): string[] {
@@ -36,27 +77,21 @@ export class IndexStore {
 	}
 
 	getPendingSyncFilePaths(): string[] {
-		return [...this.index.pendingSyncFilePaths];
+		return getPendingSyncFilePathsFromIndex(this.index);
 	}
 
 	markFileDeleted(filePath: string): boolean {
-		const trackedNoteIds = this.index.noteIdsByFile[filePath];
-		if (!trackedNoteIds || trackedNoteIds.length === 0) {
+		const record = this.index.filesByPath[filePath];
+		if (!record || record.noteIds.length === 0 || record.deleted === true) {
 			return false;
 		}
 
-		if (!this.index.deletedFilePaths.includes(filePath)) {
-			this.index.deletedFilePaths.push(filePath);
-			return true;
-		}
-
-		return false;
+		record.deleted = true;
+		return true;
 	}
 
 	markFilePendingSync(filePath: string): void {
-		if (!this.index.pendingSyncFilePaths.includes(filePath)) {
-			this.index.pendingSyncFilePaths.push(filePath);
-		}
+		this.ensureFileRecord(filePath).pendingSync = true;
 	}
 
 	queuePendingDelete(noteIds: string[]): void {
@@ -79,26 +114,43 @@ export class IndexStore {
 	}
 
 	clearDeletedFile(filePath: string): void {
-		this.index.deletedFilePaths = this.index.deletedFilePaths.filter(
-			(path) => path !== filePath,
-		);
+		const record = this.index.filesByPath[filePath];
+		if (!record) {
+			return;
+		}
+
+		delete record.deleted;
+		this.pruneFileRecord(filePath);
 	}
 
 	clearFilePendingSync(filePath: string): void {
-		this.index.pendingSyncFilePaths = this.index.pendingSyncFilePaths.filter(
-			(path) => path !== filePath,
-		);
+		const record = this.index.filesByPath[filePath];
+		if (!record) {
+			return;
+		}
+
+		delete record.pendingSync;
+		this.pruneFileRecord(filePath);
 	}
 
 	removeFileTracking(filePath: string): void {
-		delete this.index.noteIdsByFile[filePath];
-		this.clearDeletedFile(filePath);
-		this.clearFilePendingSync(filePath);
-		this.pruneDeletedFilePaths();
+		const record = this.index.filesByPath[filePath];
+		if (!record) {
+			return;
+		}
+
+		for (const noteId of record.noteIds) {
+			if (this.noteOwnerById.get(noteId) === filePath) {
+				this.noteOwnerById.delete(noteId);
+			}
+		}
+
+		delete this.index.filesByPath[filePath];
 	}
 
 	replace(index: PluginIndex): void {
 		this.index = clonePluginIndex(index);
+		this.noteOwnerById = buildNoteOwnerById(this.index);
 	}
 
 	setLastScanConfigHash(signature: string | null): void {
@@ -114,29 +166,22 @@ export class IndexStore {
 	}
 
 	renameFile(oldPath: string, newPath: string): void {
-		const noteIds = this.index.noteIdsByFile[oldPath];
-		if (noteIds) {
-			delete this.index.noteIdsByFile[oldPath];
-			this.index.noteIdsByFile[newPath] = [...noteIds];
+		if (oldPath === newPath) {
+			return;
+		}
 
-			for (const noteId of noteIds) {
-				const record = this.index.cardsByNoteId[noteId];
-				if (record) {
-					record.filePath = newPath;
-				}
+		const record = this.index.filesByPath[oldPath];
+		if (!record) {
+			return;
+		}
+
+		delete this.index.filesByPath[oldPath];
+		this.index.filesByPath[newPath] = cloneFileRecord(record);
+
+		for (const noteId of record.noteIds) {
+			if (this.noteOwnerById.get(noteId) === oldPath) {
+				this.noteOwnerById.set(noteId, newPath);
 			}
-		}
-
-		if (this.index.deletedFilePaths.includes(oldPath)) {
-			this.index.deletedFilePaths = this.index.deletedFilePaths.map((filePath) =>
-				filePath === oldPath ? newPath : filePath,
-			);
-		}
-
-		if (this.index.pendingSyncFilePaths.includes(oldPath)) {
-			this.index.pendingSyncFilePaths = this.index.pendingSyncFilePaths.map((filePath) =>
-				filePath === oldPath ? newPath : filePath,
-			);
 		}
 
 		this.clearDeletedFile(newPath);
@@ -150,22 +195,20 @@ export class IndexStore {
 		const noteIdSet = new Set(noteIds);
 
 		for (const noteId of noteIdSet) {
-			delete this.index.cardsByNoteId[noteId];
+			this.noteOwnerById.delete(noteId);
 		}
 
-		for (const [filePath, fileNoteIds] of Object.entries(this.index.noteIdsByFile)) {
-			const remainingNoteIds = fileNoteIds.filter((noteId) => !noteIdSet.has(noteId));
-			if (remainingNoteIds.length > 0) {
-				this.index.noteIdsByFile[filePath] = remainingNoteIds;
-			} else {
-				delete this.index.noteIdsByFile[filePath];
+		for (const [filePath, record] of Object.entries(this.index.filesByPath)) {
+			const remainingNoteIds = record.noteIds.filter((noteId) => !noteIdSet.has(noteId));
+			if (remainingNoteIds.length !== record.noteIds.length) {
+				record.noteIds = remainingNoteIds;
 			}
+			this.pruneFileRecord(filePath);
 		}
 
 		this.index.pendingDeleteNoteIds = this.index.pendingDeleteNoteIds.filter(
 			(noteId) => !noteIdSet.has(noteId),
 		);
-		this.pruneDeletedFilePaths();
 	}
 
 	setFileCards(
@@ -174,9 +217,10 @@ export class IndexStore {
 		options: { preserveUnseen?: boolean } = {},
 	): void {
 		const preserveUnseen = options.preserveUnseen ?? false;
-		const existingNoteIds = new Set(this.index.noteIdsByFile[filePath] ?? []);
+		const record = this.ensureFileRecord(filePath);
+		const previousNoteIds = [...record.noteIds];
+		const existingNoteIds = new Set(previousNoteIds);
 		const nextNoteIds: string[] = [];
-		const now = Date.now();
 
 		for (const card of cards) {
 			if (!card.noteId) {
@@ -184,54 +228,63 @@ export class IndexStore {
 			}
 
 			nextNoteIds.push(card.noteId);
-			const existingRecord = this.index.cardsByNoteId[card.noteId];
-			if (existingRecord && existingRecord.filePath !== filePath) {
-				const previousFileNoteIds = this.index.noteIdsByFile[existingRecord.filePath];
-				if (previousFileNoteIds) {
-					const remainingNoteIds = previousFileNoteIds.filter(
-						(noteId) => noteId !== card.noteId,
-					);
-					if (remainingNoteIds.length > 0) {
-						this.index.noteIdsByFile[existingRecord.filePath] = remainingNoteIds;
-					} else {
-						delete this.index.noteIdsByFile[existingRecord.filePath];
-					}
-				}
+			const previousOwner = this.noteOwnerById.get(card.noteId);
+			if (previousOwner && previousOwner !== filePath) {
+				this.removeNoteIdFromFile(previousOwner, card.noteId);
 			}
-
-			this.index.cardsByNoteId[card.noteId] = {
-				noteId: card.noteId,
-				filePath,
-				lastSeenAt: now,
-			};
+			this.noteOwnerById.set(card.noteId, filePath);
 		}
 
+		const nextNoteIdSet = new Set(nextNoteIds);
 		if (!preserveUnseen) {
 			for (const noteId of existingNoteIds) {
-				if (!nextNoteIds.includes(noteId)) {
-					delete this.index.cardsByNoteId[noteId];
+				if (!nextNoteIdSet.has(noteId) && this.noteOwnerById.get(noteId) === filePath) {
+					this.noteOwnerById.delete(noteId);
 				}
 			}
 		}
 
-		const mergedNoteIds = preserveUnseen
-			? Array.from(new Set([...(this.index.noteIdsByFile[filePath] ?? []), ...nextNoteIds]))
+		record.noteIds = preserveUnseen
+			? Array.from(new Set([...previousNoteIds, ...nextNoteIds]))
 			: nextNoteIds;
-
-		if (mergedNoteIds.length > 0) {
-			this.index.noteIdsByFile[filePath] = mergedNoteIds;
-		} else {
-			delete this.index.noteIdsByFile[filePath];
-		}
-
-		this.clearDeletedFile(filePath);
-		this.pruneDeletedFilePaths();
+		delete record.deleted;
+		this.pruneFileRecord(filePath);
 	}
 
-	private pruneDeletedFilePaths(): void {
-		this.index.deletedFilePaths = this.index.deletedFilePaths.filter(
-			(filePath) => Boolean(this.index.noteIdsByFile[filePath]),
-		);
+	private ensureFileRecord(filePath: string): FileIndexRecord {
+		const existingRecord = this.index.filesByPath[filePath];
+		if (existingRecord) {
+			return existingRecord;
+		}
+
+		const nextRecord: FileIndexRecord = { noteIds: [] };
+		this.index.filesByPath[filePath] = nextRecord;
+		return nextRecord;
+	}
+
+	private removeNoteIdFromFile(filePath: string, noteId: string): void {
+		const record = this.index.filesByPath[filePath];
+		if (!record || !record.noteIds.includes(noteId)) {
+			return;
+		}
+
+		record.noteIds = record.noteIds.filter((entry) => entry !== noteId);
+		if (this.noteOwnerById.get(noteId) === filePath) {
+			this.noteOwnerById.delete(noteId);
+		}
+		this.pruneFileRecord(filePath);
+	}
+
+	private pruneFileRecord(filePath: string): void {
+		const record = this.index.filesByPath[filePath];
+		if (
+			record &&
+			record.noteIds.length === 0 &&
+			record.deleted !== true &&
+			record.pendingSync !== true
+		) {
+			delete this.index.filesByPath[filePath];
+		}
 	}
 }
 
@@ -246,57 +299,59 @@ function loadPluginIndex(snapshot?: unknown): PluginIndex {
 function clonePluginIndex(index: PluginIndex): PluginIndex {
 	return {
 		schemaVersion: index.schemaVersion,
-		cardsByNoteId: { ...index.cardsByNoteId },
-		noteIdsByFile: cloneFileMap(index.noteIdsByFile),
-		deletedFilePaths: [...index.deletedFilePaths],
+		filesByPath: cloneFileMap(index.filesByPath),
 		pendingDeleteNoteIds: [...index.pendingDeleteNoteIds],
-		pendingSyncFilePaths: [...index.pendingSyncFilePaths],
 		lastSyncAt: index.lastSyncAt,
 		lastScanConfigHash: index.lastScanConfigHash,
 		lastFullReconcileAt: index.lastFullReconcileAt,
 	};
 }
 
-function cloneFileMap(fileMap: Record<string, string[]>): Record<string, string[]> {
+function cloneFileMap(fileMap: Record<string, FileIndexRecord>): Record<string, FileIndexRecord> {
 	return Object.fromEntries(
-		Object.entries(fileMap).map(([filePath, noteIds]) => [filePath, [...noteIds]]),
+		Object.entries(fileMap).map(([filePath, record]) => [filePath, cloneFileRecord(record)]),
 	);
+}
+
+function cloneFileRecord(record: FileIndexRecord): FileIndexRecord {
+	return {
+		noteIds: [...record.noteIds],
+		...(record.deleted === true ? { deleted: true } : {}),
+		...(record.pendingSync === true ? { pendingSync: true } : {}),
+	};
 }
 
 function isPluginIndex(value: unknown): value is PluginIndex {
 	return (
 		isRecord(value) &&
 		typeof value.schemaVersion === "number" &&
-		isCardIndexRecordMap(value.cardsByNoteId) &&
-		isStringArrayMap(value.noteIdsByFile) &&
-		isStringArray(value.deletedFilePaths) &&
+		isFileIndexRecordMap(value.filesByPath) &&
 		isStringArray(value.pendingDeleteNoteIds) &&
-		isStringArray(value.pendingSyncFilePaths) &&
 		isNullableNumber(value.lastSyncAt) &&
 		isNullableString(value.lastScanConfigHash) &&
 		isNullableNumber(value.lastFullReconcileAt)
 	);
 }
 
-function isCardIndexRecordMap(value: unknown): value is PluginIndex["cardsByNoteId"] {
-	return isRecord(value) && Object.values(value).every(isCardIndexRecord);
+function isFileIndexRecordMap(value: unknown): value is Record<string, FileIndexRecord> {
+	return isRecord(value) && Object.values(value).every(isFileIndexRecord);
 }
 
-function isCardIndexRecord(value: unknown): boolean {
+function isFileIndexRecord(value: unknown): value is FileIndexRecord {
 	return (
 		isRecord(value) &&
-		typeof value.noteId === "string" &&
-		typeof value.filePath === "string" &&
-		typeof value.lastSeenAt === "number"
+		isStringArray(value.noteIds) &&
+		isOptionalTrue(value.deleted) &&
+		isOptionalTrue(value.pendingSync)
 	);
-}
-
-function isStringArrayMap(value: unknown): value is Record<string, string[]> {
-	return isRecord(value) && Object.values(value).every(isStringArray);
 }
 
 function isStringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isOptionalTrue(value: unknown): value is true | undefined {
+	return value === undefined || value === true;
 }
 
 function isNullableNumber(value: unknown): value is number | null {

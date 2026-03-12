@@ -53,19 +53,16 @@ export interface ScannedFile {
 	errors: ParseError[];
 }
 
-export interface CardIndexRecord {
-	noteId: string;
-	filePath: string;
-	lastSeenAt: number;
+export interface FileIndexRecord {
+	noteIds: string[];
+	deleted?: true;
+	pendingSync?: true;
 }
 
 export interface PluginIndex {
 	schemaVersion: number;
-	cardsByNoteId: Record<string, CardIndexRecord>;
-	noteIdsByFile: Record<string, string[]>;
-	deletedFilePaths: string[];
+	filesByPath: Record<string, FileIndexRecord>;
 	pendingDeleteNoteIds: string[];
-	pendingSyncFilePaths: string[];
 	lastSyncAt: number | null;
 	lastScanConfigHash: string | null;
 	lastFullReconcileAt: number | null;

@@ -1,6 +1,6 @@
 import { Plugin } from "obsidian";
 import { registerCommands } from "./commands";
-import { IndexStore } from "./index-store";
+import { IndexStore, getTrackedFilePathsFromIndex, getTrackedNoteCountFromIndex } from "./index-store";
 import { logVerbose } from "./logger";
 import { registerObsidianEventHandlers } from "./obsidian-events";
 import {
@@ -46,10 +46,10 @@ export default class ObakPlugin extends Plugin {
 		const snapshot = this.indexStore.getSnapshot();
 
 		logVerbose(this, "Loaded plugin state.", {
-			trackedFiles: Object.keys(snapshot.noteIdsByFile).length,
-			trackedCards: Object.keys(snapshot.cardsByNoteId).length,
+			trackedFiles: getTrackedFilePathsFromIndex(snapshot).length,
+			trackedCards: getTrackedNoteCountFromIndex(snapshot),
 			pendingDeletes: snapshot.pendingDeleteNoteIds.length,
-			pendingSyncFiles: snapshot.pendingSyncFilePaths.length,
+			pendingSyncFiles: this.indexStore.getPendingSyncFilePaths().length,
 		});
 
 		this.addSettingTab(new ObakSettingTab(this.app, this));
