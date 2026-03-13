@@ -4,7 +4,6 @@ import { buildNoticeMessage, formatParseError } from "./notices";
 import { syncChangedCardsToAnki } from "./sync-runner";
 import type { LocalRefreshResult, ObakPluginApi, SyncToAnkiResult } from "./types";
 
-const AUTO_SYNC_DELAY_MS = 5000;
 const NOTICE_AUTO_HIDE_MS = 7000;
 const NOTICE_PERSIST_MS = 0;
 
@@ -86,15 +85,16 @@ export class AutoSyncController {
 
 	private schedule(reason: AutoSyncReason, sourcePath?: string): void {
 		this.cancel();
+		const delayMs = getAutoSyncDelayMs(this.plugin);
 
 		const timeoutId = window.setTimeout(() => {
 			this.pending = null;
 			void this.execute(reason, sourcePath);
-		}, AUTO_SYNC_DELAY_MS);
+		}, delayMs);
 
 		this.pending = { reason, timeoutId };
 		logVerbose(this.plugin, "Scheduled auto sync.", {
-			delayMs: AUTO_SYNC_DELAY_MS,
+			delayMs,
 			reason,
 			sourcePath,
 		});
@@ -280,4 +280,11 @@ function isMarkdownFile(file: TFile | null): file is TFile {
 
 function asErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function getAutoSyncDelayMs(plugin: ObakPluginApi): number {
+	const delaySeconds = plugin.settings.autoSyncDelaySeconds;
+	return Number.isInteger(delaySeconds) && delaySeconds >= 1
+		? delaySeconds * 1000
+		: 5000;
 }

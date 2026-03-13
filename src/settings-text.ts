@@ -22,6 +22,7 @@ export interface SettingsTexts {
 	backupBeforeBulkDeleteThreshold: ToggleSettingText;
 	reconcileOnStartup: ToggleSettingText;
 	autoSyncEnabled: ToggleSettingText;
+	autoSyncDelaySeconds: ToggleSettingText;
 	showDetailedErrorNotices: ToggleSettingText;
 	enableVerboseLogging: ToggleSettingText;
 }
@@ -69,7 +70,11 @@ const ENGLISH_SETTINGS_TEXTS: SettingsTexts = {
 	},
 	autoSyncEnabled: {
 		name: "Auto-sync incremental changes",
-		desc: "Wait 5 seconds after edits stop or tracked files change, then run incremental sync automatically. Auto sync uses the pending change set since the last sync and never overlaps an in-flight sync.",
+		desc: "Run incremental sync automatically after edits stop or tracked files change. Auto sync uses the pending change set since the last sync and never overlaps an in-flight sync.",
+	},
+	autoSyncDelaySeconds: {
+		name: "Auto-sync delay (seconds)",
+		desc: "How many seconds to wait after edits stop or tracked files change before incremental auto sync starts.",
 	},
 	showDetailedErrorNotices: {
 		name: "Show detailed error notices",
@@ -124,7 +129,11 @@ const CHINESE_SETTINGS_TEXTS: SettingsTexts = {
 	},
 	autoSyncEnabled: {
 		name: "自动同步增量改动",
-		desc: "在编辑停止 5 秒后，或跟踪文件发生变化后，自动运行增量同步。自动同步会基于上次同步后积累的待处理变更集执行，且不会与正在进行的同步重叠。",
+		desc: "在编辑停止后，或跟踪文件发生变化后，自动运行增量同步。自动同步会基于上次同步后积累的待处理变更集执行，且不会与正在进行的同步重叠。",
+	},
+	autoSyncDelaySeconds: {
+		name: "自动同步延迟（秒）",
+		desc: "编辑停止或跟踪文件发生变化后，在启动增量自动同步之前等待的秒数。",
 	},
 	showDetailedErrorNotices: {
 		name: "显示详细错误通知",

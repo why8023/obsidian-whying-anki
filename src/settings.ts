@@ -11,6 +11,7 @@ export interface ObakSettings {
 	backupBeforeBulkDeleteExportPath: string;
 	backupBeforeBulkDeleteThreshold: number;
 	autoSyncEnabled: boolean;
+	autoSyncDelaySeconds: number;
 	reconcileOnStartup: boolean;
 	showDetailedErrorNotices: boolean;
 	enableVerboseLogging: boolean;
@@ -27,6 +28,7 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	backupBeforeBulkDeleteThreshold: 20,
 	reconcileOnStartup: true,
 	autoSyncEnabled: false,
+	autoSyncDelaySeconds: 5,
 	showDetailedErrorNotices: false,
 	enableVerboseLogging: false,
 };
@@ -88,6 +90,14 @@ export function loadSettings(settings?: unknown): ObakSettings {
 
 	if (typeof settings.autoSyncEnabled === "boolean") {
 		normalized.autoSyncEnabled = settings.autoSyncEnabled;
+	}
+
+	if (
+		typeof settings.autoSyncDelaySeconds === "number" &&
+		Number.isInteger(settings.autoSyncDelaySeconds) &&
+		settings.autoSyncDelaySeconds >= 1
+	) {
+		normalized.autoSyncDelaySeconds = settings.autoSyncDelaySeconds;
 	}
 
 	if (typeof settings.showDetailedErrorNotices === "boolean") {
@@ -247,6 +257,24 @@ export class ObakSettingTab extends PluginSettingTab {
 						await this.plugin.savePluginData();
 					}),
 			);
+
+		new Setting(containerEl)
+			.setName(texts.autoSyncDelaySeconds.name)
+			.setDesc(texts.autoSyncDelaySeconds.desc)
+			.addText((text) => {
+				text.inputEl.type = "number";
+				text.inputEl.min = "1";
+				return text
+					.setPlaceholder(String(DEFAULT_SETTINGS.autoSyncDelaySeconds))
+					.setValue(String(this.plugin.settings.autoSyncDelaySeconds))
+					.onChange(async (value) => {
+						const delaySeconds = Number.parseInt(value, 10);
+						if (Number.isInteger(delaySeconds) && delaySeconds >= 1) {
+							this.plugin.settings.autoSyncDelaySeconds = delaySeconds;
+							await this.plugin.savePluginData();
+						}
+					});
+			});
 
 		new Setting(containerEl)
 			.setName(texts.showDetailedErrorNotices.name)
