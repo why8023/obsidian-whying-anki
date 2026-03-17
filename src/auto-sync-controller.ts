@@ -1,6 +1,6 @@
-import { Notice, Plugin, TFile } from "obsidian";
+import { Plugin, TFile } from "obsidian";
 import { logError, logVerbose } from "./logger";
-import { buildNoticeMessage, formatParseError } from "./notices";
+import { buildNoticeMessage, formatParseError, showStyledNotice } from "./notices";
 import { syncChangedCardsToAnki } from "./sync-runner";
 import type { LocalRefreshResult, ObakPluginApi, SyncToAnkiResult } from "./types";
 
@@ -139,7 +139,7 @@ export class AutoSyncController {
 				});
 			} catch (error) {
 				logError("Auto incremental sync failed.", error);
-				new Notice(
+				showStyledNotice(
 					buildNoticeMessage({
 						label: "Auto sync",
 						title: "Auto incremental sync failed",
@@ -189,7 +189,7 @@ function reportAutoSyncResult(
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
 	const changeCount = result.cardsCreated + result.cardsUpdated + result.cardsDeleted;
 
-	new Notice(
+	showStyledNotice(
 		buildNoticeMessage({
 			label: "Auto sync",
 			title: issues === 0 ? "Auto sync finished" : "Auto sync finished with issues",

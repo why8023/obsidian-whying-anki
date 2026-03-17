@@ -2,6 +2,8 @@ import { Notice } from "obsidian";
 import type { ParseError, SyncProgressUpdate } from "./types";
 
 const INDETERMINATE_PROGRESS_WIDTH = "35%";
+const NOTICE_SHELL_CLASS = "obak-notice-shell";
+const NOTICE_MESSAGE_CLASS = "obak-notice-shell__message";
 
 export type NoticeTone = "neutral" | "success" | "warning" | "danger";
 export type NoticeMetricTone =
@@ -33,7 +35,7 @@ export class SyncProgressNotice {
 	private readonly barEl: HTMLDivElement;
 
 	constructor(title: string) {
-		this.notice = new Notice("", 0);
+		this.notice = createStyledNotice(0);
 		this.notice.messageEl.empty();
 
 		const rootEl = createNoticeRoot("neutral");
@@ -202,8 +204,29 @@ export function formatParseError(error: ParseError): string {
 	return `${error.filePath}:${error.line} ${error.message}`;
 }
 
+export function showStyledNotice(
+	message: string | DocumentFragment,
+	duration?: number,
+): Notice {
+	const notice = createStyledNotice(duration);
+	notice.setMessage(message);
+	return notice;
+}
+
 function createNoticeRoot(tone: NoticeTone): HTMLDivElement {
 	const rootEl = document.createElement("div");
 	rootEl.className = `obak-notice obak-notice--${tone}`;
 	return rootEl;
+}
+
+function createStyledNotice(duration?: number): Notice {
+	const notice = new Notice("", duration);
+	attachNoticeClasses(notice);
+	return notice;
+}
+
+function attachNoticeClasses(notice: Notice): void {
+	notice.containerEl?.classList.add(NOTICE_SHELL_CLASS);
+	notice.messageEl.parentElement?.classList.add(NOTICE_SHELL_CLASS);
+	notice.messageEl.classList.add(NOTICE_MESSAGE_CLASS);
 }

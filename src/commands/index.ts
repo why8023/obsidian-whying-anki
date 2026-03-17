@@ -1,6 +1,11 @@
-import { MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { MarkdownView, Plugin, TFile } from "obsidian";
 import { logError, logVerbose } from "../logger";
-import { buildNoticeMessage, formatParseError, SyncProgressNotice } from "../notices";
+import {
+	buildNoticeMessage,
+	formatParseError,
+	showStyledNotice,
+	SyncProgressNotice,
+} from "../notices";
 import {
 	rebuildSyncIndex,
 	refreshLocalMetadataForFiles,
@@ -98,7 +103,7 @@ async function runValidateCurrentFile(
 		cards: scannedFile.cards.length,
 		issues: issueCount,
 	});
-	new Notice(
+	showStyledNotice(
 		buildNoticeMessage(
 			{
 				label: "Validation",
@@ -186,7 +191,7 @@ async function runSyncCardsToAnki(
 			reportSyncResult(plugin, result, "Full sync");
 		} catch (error) {
 			logError("Full sync failed.", error);
-			new Notice(
+			showStyledNotice(
 				buildNoticeMessage({
 					label: "Anki sync",
 					title: "Full sync failed",
@@ -222,7 +227,7 @@ async function runSyncChangedCardsToAnki(
 			reportSyncResult(plugin, result, "Incremental sync");
 		} catch (error) {
 			logError("Incremental sync failed.", error);
-			new Notice(
+			showStyledNotice(
 				buildNoticeMessage({
 					label: "Anki sync",
 					title: "Incremental sync failed",
@@ -262,7 +267,7 @@ function reportResult(
 
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
 
-	new Notice(
+	showStyledNotice(
 		buildNoticeMessage({
 			label: config.label,
 			title: issues === 0 ? config.successTitle : config.issueTitle,
@@ -306,7 +311,7 @@ function reportSyncResult(
 
 	const issues = result.parseErrors.length + result.runtimeErrors.length;
 
-	new Notice(
+	showStyledNotice(
 		buildNoticeMessage({
 			label: "Anki sync",
 			title: issues === 0 ? `${label} complete` : `${label} finished with issues`,
@@ -386,7 +391,7 @@ function getNoticeDuration(hasIssues: boolean): number {
 }
 
 function showSyncBusyNotice(label: string): void {
-	new Notice(
+	showStyledNotice(
 		buildNoticeMessage({
 			label: "Anki sync",
 			title: `${label} skipped`,

@@ -1,3 +1,19 @@
+.notice.obak-notice-shell,
+.obak-notice-shell {
+	padding: 0;
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+}
+
+.notice.obak-notice-shell .notice-message,
+.obak-notice-shell__message {
+	padding: 0;
+	background: transparent;
+	border: 0;
+	box-shadow: none;
+}
+
 .obak-notice {
 	--obak-notice-accent: var(--interactive-accent);
 	--obak-notice-surface: var(--background-secondary);
@@ -20,7 +36,7 @@
 			var(--obak-notice-surface) 0%,
 			var(--obak-notice-surface-alt) 100%
 		);
-	box-shadow: var(--shadow-s);
+	box-shadow: none;
 }
 
 .obak-notice--success {
