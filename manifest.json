@@ -1,6 +1,6 @@
 {
 	"id": "obsidian-obak",
-	"name": "obak",
+	"name": "OBAK",
 	"version": "0.0.7",
 	"minAppVersion": "1.5.0",
 	"description": "Stages a one-way Obsidian to Anki sync workflow with local card parsing, metadata rewriting, and index persistence.",
