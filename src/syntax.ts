@@ -35,7 +35,7 @@ interface CardParseState {
 
 const MARKER_PATTERN = /^<!--\s*(card-start|card-back|card-end)(.*?)-->$/;
 const ATTRIBUTE_PATTERN = /\s+([A-Za-z][\w-]*)="([^"]*)"/gy;
-const START_ATTRIBUTES = new Set(["deck", "tags"]);
+const START_RESERVED_ATTRIBUTES = new Set(["deck", "tags"]);
 // Accept legacy rev markers on read; local rewrites only keep the note id.
 const END_ATTRIBUTES = new Set(["id", "rev"]);
 
@@ -220,7 +220,9 @@ function parseMarkerLine(
 
 	const attributeResult = parseAttributes(
 		rawAttributes,
-		kind === "card-start" ? START_ATTRIBUTES : END_ATTRIBUTES,
+		kind === "card-start"
+			? { reservedAttributes: START_RESERVED_ATTRIBUTES, allowUnknown: true }
+			: { reservedAttributes: END_ATTRIBUTES, allowUnknown: false },
 		filePath,
 		lineNumber,
 	);
@@ -255,7 +257,10 @@ function parseMarkerLine(
 
 function parseAttributes(
 	rawAttributes: string,
-	allowedAttributes: Set<string>,
+	options: {
+		reservedAttributes: ReadonlySet<string>;
+		allowUnknown: boolean;
+	},
 	filePath: string,
 	lineNumber: number,
 ): { values: Record<string, string> } | { error: ParseError } {
@@ -289,7 +294,7 @@ function parseAttributes(
 			};
 		}
 
-		if (!allowedAttributes.has(key)) {
+		if (!options.allowUnknown && !options.reservedAttributes.has(key)) {
 			return {
 				error: createParseError(
 					filePath,

@@ -62,7 +62,8 @@ anki-tags:
 
 Rules:
 
-- `card-start` accepts optional `deck="..."` and `tags="tag1,tag2"` attributes.
+- `card-start` accepts built-in `deck="..."` and `tags="tag1,tag2"` attributes, and also allows extra custom `key="value"` attributes.
+- Unknown custom attributes on `card-start` are parsed but ignored during sync; `deck` and `tags` remain reserved attribute names.
 - `card-back` accepts no attributes.
 - `card-end` is plugin-managed and currently stores only `id="..."`.
 - If `card-end` has no `id`, the card is treated as new.

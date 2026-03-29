@@ -62,7 +62,8 @@ anki-tags:
 
 规则：
 
-- `card-start` 支持可选属性 `deck="..."` 和 `tags="tag1,tag2"`。
+- `card-start` 支持内置属性 `deck="..."` 和 `tags="tag1,tag2"`，也允许额外的自定义 `key="value"` 属性。
+- `card-start` 上的未知自定义属性目前只参与语法解析，不会参与同步；`deck` 和 `tags` 是保留属性名。
 - `card-back` 不接受任何属性。
 - `card-end` 由插件维护，目前只写入 `id="..."`。
 - 如果 `card-end` 没有 `id`，该卡片会被当作新卡片处理。
