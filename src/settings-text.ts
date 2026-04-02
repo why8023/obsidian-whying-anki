@@ -17,6 +17,7 @@ export interface SettingsTexts {
 	ankiHost: SettingText;
 	ankiPort: ToggleSettingText;
 	autoCreateMissingDecks: ToggleSettingText;
+	cleanupEmptyDecksEnabled: ToggleSettingText;
 	backupBeforeBulkDelete: ToggleSettingText;
 	backupBeforeBulkDeleteExportPath: SettingText;
 	backupBeforeBulkDeleteThreshold: ToggleSettingText;
@@ -50,6 +51,10 @@ const ENGLISH_SETTINGS_TEXTS: SettingsTexts = {
 	autoCreateMissingDecks: {
 		name: "Auto-create missing decks",
 		desc: "Create the target deck in Anki before adding notes when needed.",
+	},
+	cleanupEmptyDecksEnabled: {
+		name: "Delete empty decks after sync",
+		desc: "After sync finishes, delete empty child decks under the configured default root deck only.",
 	},
 	backupBeforeBulkDelete: {
 		name: "Backup before bulk delete",
@@ -109,6 +114,10 @@ const CHINESE_SETTINGS_TEXTS: SettingsTexts = {
 	autoCreateMissingDecks: {
 		name: "自动创建缺失牌组",
 		desc: "需要时，在添加笔记前先在 Anki 中创建目标牌组。",
+	},
+	cleanupEmptyDecksEnabled: {
+		name: "同步后删除空牌组",
+		desc: "同步结束后，仅删除已配置默认根牌组下面的空子牌组。",
 	},
 	backupBeforeBulkDelete: {
 		name: "批量删除前备份",

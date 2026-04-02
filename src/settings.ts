@@ -7,6 +7,7 @@ export interface ObakSettings {
 	ankiHost: string;
 	ankiPort: number;
 	autoCreateMissingDecks: boolean;
+	cleanupEmptyDecksEnabled: boolean;
 	backupBeforeBulkDeleteEnabled: boolean;
 	backupBeforeBulkDeleteExportPath: string;
 	backupBeforeBulkDeleteThreshold: number;
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: ObakSettings = {
 	ankiHost: "127.0.0.1",
 	ankiPort: 8765,
 	autoCreateMissingDecks: true,
+	cleanupEmptyDecksEnabled: true,
 	backupBeforeBulkDeleteEnabled: false,
 	backupBeforeBulkDeleteExportPath: "",
 	backupBeforeBulkDeleteThreshold: 20,
@@ -66,6 +68,10 @@ export function loadSettings(settings?: unknown): ObakSettings {
 
 	if (typeof settings.autoCreateMissingDecks === "boolean") {
 		normalized.autoCreateMissingDecks = settings.autoCreateMissingDecks;
+	}
+
+	if (typeof settings.cleanupEmptyDecksEnabled === "boolean") {
+		normalized.cleanupEmptyDecksEnabled = settings.cleanupEmptyDecksEnabled;
 	}
 
 	if (typeof settings.backupBeforeBulkDeleteEnabled === "boolean") {
@@ -187,6 +193,18 @@ export class ObakSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.autoCreateMissingDecks)
 					.onChange(async (value) => {
 						this.plugin.settings.autoCreateMissingDecks = value;
+						await this.plugin.savePluginData();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName(texts.cleanupEmptyDecksEnabled.name)
+			.setDesc(texts.cleanupEmptyDecksEnabled.desc)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.cleanupEmptyDecksEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.cleanupEmptyDecksEnabled = value;
 						await this.plugin.savePluginData();
 					}),
 			);

@@ -10,6 +10,10 @@ import {
 	type ObakNoteInput,
 	type ObakStoredCardTemplate,
 } from "./anki-model";
+import {
+	collectDescendantDeckNames,
+	hasRemainingDescendantDeck,
+} from "./deck-cleanup";
 import type { ObakSettings } from "./settings";
 
 const ANKI_CONNECT_VERSION = 6;
@@ -127,6 +131,42 @@ export class AnkiClient {
 			cards: normalizedCardIds,
 			deck: deckName,
 		});
+	}
+
+	async cleanupEmptyDecksUnderRoot(rootDeck: string): Promise<string[]> {
+		const deckNamesById = await this.getDeckNamesAndIds();
+		const scopedDeckNames = collectDescendantDeckNames(
+			rootDeck,
+			Object.keys(deckNamesById),
+		);
+		if (scopedDeckNames.length === 0) {
+			return [];
+		}
+
+		const remainingScopedDeckNames = new Set(scopedDeckNames);
+		const deletedDeckNames: string[] = [];
+
+		for (const deckName of scopedDeckNames) {
+			if (
+				!remainingScopedDeckNames.has(deckName) ||
+				hasRemainingDescendantDeck(deckName, remainingScopedDeckNames)
+			) {
+				continue;
+			}
+
+			const cardIds = await this.findCards(
+				`deck:"${escapeAnkiSearchTerm(deckName)}"`,
+			);
+			if (cardIds.length > 0) {
+				continue;
+			}
+
+			await this.deleteDecks([deckName]);
+			remainingScopedDeckNames.delete(deckName);
+			deletedDeckNames.push(deckName);
+		}
+
+		return deletedDeckNames;
 	}
 
 	async findObakNoteIds(): Promise<string[]> {
@@ -254,6 +294,24 @@ export class AnkiClient {
 		return this.call<number>("version");
 	}
 
+	private async getDeckNamesAndIds(): Promise<Record<string, number>> {
+		const deckNamesAndIds = await this.call<Record<string, unknown>>("deckNamesAndIds");
+		if (!isRecord(deckNamesAndIds)) {
+			return {};
+		}
+
+		return Object.entries(deckNamesAndIds).reduce<Record<string, number>>(
+			(result, [deckName, deckId]) => {
+				if (typeof deckId === "number" && Number.isInteger(deckId)) {
+					result[deckName] = deckId;
+				}
+
+				return result;
+			},
+			{},
+		);
+	}
+
 	private async getModelNames(): Promise<string[]> {
 		return this.call<string[]>("modelNames");
 	}
@@ -297,6 +355,24 @@ export class AnkiClient {
 				css,
 			},
 		});
+	}
+
+	private async deleteDecks(deckNames: string[]): Promise<void> {
+		const normalizedDeckNames = [
+			...new Set(deckNames.map((deckName) => deckName.trim()).filter(Boolean)),
+		];
+		if (normalizedDeckNames.length === 0) {
+			return;
+		}
+
+		await this.call("deleteDecks", {
+			decks: normalizedDeckNames,
+			cardsToo: true,
+		});
+	}
+
+	private async findCards(query: string): Promise<number[]> {
+		return this.call<number[]>("findCards", { query });
 	}
 
 	private async ensureObakModelPresentation(): Promise<void> {
@@ -492,4 +568,8 @@ function isAnkiFieldValue(value: unknown): value is { value: string } {
 		"value" in value &&
 		typeof value.value === "string"
 	);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }

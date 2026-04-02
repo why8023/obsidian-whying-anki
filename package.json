@@ -4,6 +4,7 @@
 	"description": "Obsidian desktop plugin for staged one-way card sync into Anki.",
 	"main": "main.js",
 	"type": "module",
+	"packageManager": "npm@10.9.3",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
@@ -28,9 +29,5 @@
 		"markdown-it": "^14.1.1",
 		"markdown-it-task-lists": "^2.1.1",
 		"obsidian": "latest"
-	},
-	"volta": {
-		"node": "22.20.0",
-		"npm": "10.9.3"
 	}
 }

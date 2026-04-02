@@ -394,7 +394,7 @@ async function syncCardsToAnkiForFiles(
 		(count, scannedFile) => count + scannedFile.cards.length,
 		0,
 	);
-	const totalProgressSteps = 5 + totalCardsToSync;
+	const totalProgressSteps = 6 + totalCardsToSync;
 	let completedProgressSteps = 1;
 
 	reportSyncProgress(options, {
@@ -574,6 +574,22 @@ async function syncCardsToAnkiForFiles(
 		}
 	}
 
+	completedProgressSteps += processedCards;
+	const emptyDeckCleanupResult = await cleanupEmptyScopedDecks(
+		plugin,
+		client,
+		result,
+		options,
+		completedProgressSteps,
+		totalProgressSteps,
+	);
+	completedProgressSteps += 1;
+	reportSyncProgress(options, {
+		message: emptyDeckCleanupResult.statusMessage,
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
+
 	if (advanceSyncCursor) {
 		plugin.indexStore.setLastSyncAt(Date.now());
 		plugin.indexStore.setLastScanConfigHash(scanConfigSignature);
@@ -587,6 +603,62 @@ async function syncCardsToAnkiForFiles(
 		total: totalProgressSteps,
 	});
 	return result;
+}
+
+async function cleanupEmptyScopedDecks(
+	plugin: ObakPluginApi,
+	client: AnkiClient,
+	result: SyncToAnkiResult,
+	options: SyncExecutionOptions | undefined,
+	completedProgressSteps: number,
+	totalProgressSteps: number,
+): Promise<{ deletedDeckNames: string[]; statusMessage: string }> {
+	if (!plugin.settings.cleanupEmptyDecksEnabled) {
+		return {
+			deletedDeckNames: [],
+			statusMessage: "Skipped empty deck cleanup because the setting is disabled.",
+		};
+	}
+
+	const rootDeck = plugin.settings.defaultDeck.trim();
+	if (!rootDeck) {
+		return {
+			deletedDeckNames: [],
+			statusMessage: "Skipped empty deck cleanup because the root deck is empty.",
+		};
+	}
+
+	reportSyncProgress(options, {
+		message: `Checking for empty decks under "${rootDeck}"...`,
+		completed: completedProgressSteps,
+		total: totalProgressSteps,
+	});
+
+	try {
+		const deletedDeckNames = await client.cleanupEmptyDecksUnderRoot(rootDeck);
+		if (deletedDeckNames.length > 0) {
+			logVerbose(plugin, "Deleted empty decks under the configured root deck.", {
+				rootDeck,
+				deletedDeckNames,
+			});
+		}
+
+		return {
+			deletedDeckNames,
+			statusMessage:
+				deletedDeckNames.length > 0
+					? `Deleted ${deletedDeckNames.length} empty deck(s) under "${rootDeck}".`
+					: `No empty decks needed cleanup under "${rootDeck}".`,
+		};
+	} catch (error) {
+		result.runtimeErrors.push(
+			`Failed to clean up empty decks under "${rootDeck}": ${asErrorMessage(error)}`,
+		);
+		return {
+			deletedDeckNames: [],
+			statusMessage: `Empty deck cleanup failed under "${rootDeck}".`,
+		};
+	}
 }
 
 function createLocalResult(): LocalRefreshResult {
