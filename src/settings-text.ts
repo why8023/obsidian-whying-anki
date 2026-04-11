@@ -11,7 +11,38 @@ interface ToggleSettingText {
 	desc: string;
 }
 
+interface SettingsPageTabText {
+	label: string;
+	description: string;
+}
+
+interface SettingsPageSectionText {
+	name: string;
+	desc: string;
+}
+
+interface SettingsPageText {
+	title: string;
+	description: string;
+	tabs: {
+		general: SettingsPageTabText;
+		automation: SettingsPageTabText;
+		cleanup: SettingsPageTabText;
+		advanced: SettingsPageTabText;
+	};
+	sections: {
+		deckDefaults: SettingsPageSectionText;
+		ankiConnection: SettingsPageSectionText;
+		incrementalSync: SettingsPageSectionText;
+		startupReconcile: SettingsPageSectionText;
+		deckCleanup: SettingsPageSectionText;
+		bulkDeleteBackup: SettingsPageSectionText;
+		noticesAndLogging: SettingsPageSectionText;
+	};
+}
+
 export interface SettingsTexts {
+	page: SettingsPageText;
 	defaultDeck: SettingText;
 	defaultTags: SettingText;
 	ankiHost: SettingText;
@@ -29,6 +60,63 @@ export interface SettingsTexts {
 }
 
 const ENGLISH_SETTINGS_TEXTS: SettingsTexts = {
+	page: {
+		title: "OBAK settings",
+		description:
+			"Browse OBAK options by task. Tabs reduce scrolling, and each card keeps related sync controls together.",
+		tabs: {
+			general: {
+				label: "General",
+				description:
+					"Configure deck defaults and the local AnkiConnect endpoint used for sync.",
+			},
+			automation: {
+				label: "Automation",
+				description:
+					"Tune how OBAK reacts to edits and when incremental sync starts.",
+			},
+			cleanup: {
+				label: "Cleanup & backup",
+				description:
+					"Control empty deck cleanup and add a safety backup before large delete batches.",
+			},
+			advanced: {
+				label: "Advanced",
+				description:
+					"Adjust notice verbosity and console logging for troubleshooting.",
+			},
+		},
+		sections: {
+			deckDefaults: {
+				name: "Deck defaults",
+				desc: "Choose the fallback deck root and tags used when notes do not define their own values.",
+			},
+			ankiConnection: {
+				name: "Anki connection",
+				desc: "Point OBAK at your local AnkiConnect service and decide whether missing decks can be created automatically.",
+			},
+			incrementalSync: {
+				name: "Incremental sync",
+				desc: "Watch file changes and queue incremental sync automatically after edits settle.",
+			},
+			startupReconcile: {
+				name: "Startup reconcile",
+				desc: "Check the local sync index at startup and queue deletes for vault files that no longer exist.",
+			},
+			deckCleanup: {
+				name: "Deck cleanup",
+				desc: "Remove empty child decks under the configured default root deck after sync completes.",
+			},
+			bulkDeleteBackup: {
+				name: "Bulk delete backup",
+				desc: "Export a safety backup before large delete batches so recovery stays easy.",
+			},
+			noticesAndLogging: {
+				name: "Notices and logging",
+				desc: "Choose how much runtime detail appears in notices and in the developer console.",
+			},
+		},
+	},
 	defaultDeck: {
 		name: "Default deck",
 		desc: "Acts as the root deck. If card and file decks are missing, try default deck::folder::note first, then default deck.",
@@ -92,6 +180,59 @@ const ENGLISH_SETTINGS_TEXTS: SettingsTexts = {
 };
 
 const CHINESE_SETTINGS_TEXTS: SettingsTexts = {
+	page: {
+		title: "OBAK 设置",
+		description:
+			"按使用任务浏览 OBAK 配置。通过标签分组减少滚动距离，也让相关同步选项保持在同一张卡片里。",
+		tabs: {
+			general: {
+				label: "常规",
+				description: "配置默认牌组、标签，以及本地 AnkiConnect 连接信息。",
+			},
+			automation: {
+				label: "自动化",
+				description: "调整 OBAK 如何响应编辑，以及何时启动增量自动同步。",
+			},
+			cleanup: {
+				label: "清理与备份",
+				description: "控制空牌组清理策略，并在批量删除前加上一层备份保护。",
+			},
+			advanced: {
+				label: "高级",
+				description: "调整通知细节和控制台日志，便于排查问题。",
+			},
+		},
+		sections: {
+			deckDefaults: {
+				name: "牌组默认值",
+				desc: "配置笔记没有显式指定时使用的默认根牌组和默认标签。",
+			},
+			ankiConnection: {
+				name: "Anki 连接",
+				desc: "指定本地 AnkiConnect 服务地址，并决定缺失牌组是否允许自动创建。",
+			},
+			incrementalSync: {
+				name: "增量同步",
+				desc: "监听文件改动，并在编辑稳定后自动排队执行增量同步。",
+			},
+			startupReconcile: {
+				name: "启动时对账",
+				desc: "插件启动时检查本地同步索引，并为库中已不存在的文件排队删除。",
+			},
+			deckCleanup: {
+				name: "牌组清理",
+				desc: "同步完成后，清理已配置默认根牌组下面的空子牌组。",
+			},
+			bulkDeleteBackup: {
+				name: "批量删除备份",
+				desc: "在大批量删除前先导出安全备份，降低误删后的恢复成本。",
+			},
+			noticesAndLogging: {
+				name: "通知与日志",
+				desc: "控制运行时详情在通知和开发者控制台中的展示程度。",
+			},
+		},
+	},
 	defaultDeck: {
 		name: "默认牌组",
 		desc: "作为根牌组使用。当卡片和文件都没有指定牌组时，会先尝试“默认牌组::文件夹::笔记”，再回退到“默认牌组”。",
